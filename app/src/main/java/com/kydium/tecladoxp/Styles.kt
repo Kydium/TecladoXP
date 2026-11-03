@@ -106,7 +106,7 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         stroke.color = Color.WHITE
         c.drawCircle(cx, cy, r - stroke.strokeWidth / 2f, stroke)
         text.typeface = italicBold
-        text.textSize = r * (if (num.length >= 3) 0.85f else 1.15f)
+        text.textSize = r * (if (num.length >= 3) 1.0f else 1.35f)
         text.color = Color.parseColor("#0A0A0A")
         drawCentered(c, num, cx + dp(0.8f), cy + dp(1f))
         text.color = Color.WHITE
@@ -239,9 +239,9 @@ class StyleRenderer(private val dm: DisplayMetrics) {
      */
     fun drawBar(
         c: Canvas, style: String, t: KbTheme, left: Float, right: Float, cy: Float, frac: Float, level: Int,
-        whiteTo: Float = frac, whiteAlpha: Int = 255
+        whiteTo: Float = frac, whiteAlpha: Int = 255, circleR: Float = dp(11f), circleCy: Float = cy
     ) {
-        drawBarInner(c, style, t, left, right, cy, frac, level, whiteTo, whiteAlpha)
+        drawBarInner(c, style, t, left, right, cy, frac, level, whiteTo, whiteAlpha, circleR, circleCy)
         val f = frac.coerceIn(0f, 1f)
         if (style != "club" && whiteTo > f) {
             // white "just earned" part for the other styles
@@ -255,7 +255,7 @@ class StyleRenderer(private val dm: DisplayMetrics) {
 
     private fun drawBarInner(
         c: Canvas, style: String, t: KbTheme, left: Float, right: Float, cy: Float, frac: Float, level: Int,
-        whiteTo: Float, whiteAlpha: Int
+        whiteTo: Float, whiteAlpha: Int, circleR: Float, circleCy: Float
     ) {
         fill.shader = null
         val f = frac.coerceIn(0f, 1f)
@@ -284,7 +284,7 @@ class StyleRenderer(private val dm: DisplayMetrics) {
             }
             "club" -> {
                 // GTA-style RP bar: 10 separate dashes between the two level circles
-                val nr = dp(11f)
+                val nr = circleR
                 val ncx = right - nr
                 val bl = left + dp(2f)
                 val br = ncx - nr - dp(7f)
@@ -313,7 +313,7 @@ class StyleRenderer(private val dm: DisplayMetrics) {
                         c.drawRect(bl + wStart * total, cy - h / 2f, bl + wEnd * total, cy + h / 2f, fill)
                     }
                 }
-                rpCircle(c, ncx, cy, nr, (level + 1).toString(), false)
+                rpCircle(c, ncx, circleCy, nr, (level + 1).toString(), false)
             }
             "pixel" -> {
                 val blocks = 20

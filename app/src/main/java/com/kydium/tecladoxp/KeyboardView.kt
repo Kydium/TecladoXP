@@ -75,6 +75,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var xpFrac = 0f
     private var xpLine = ""
     private var combo = 0
+    private var streak = 0
     private var comboExpire = 0L
     // xp gain animation: the earned part turns white, then fills with color
     private var animFrom = 0f
@@ -84,11 +85,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val animFillMs = 650L
 
     // ------------------------------------------------------------------ geometry
-    private val topH get() = dp(50f)
+    private val topH get() = dp(64f)
+    private val sugH get() = dp(32f)
     private val rowH get() = dp(54f) * heightScale
     private val padY get() = dp(4f)
     private val padX get() = dp(3f)
-    private val badgeW get() = dp(58f)
     var unitW = 1f
         private set
     val keyRowH: Float get() = rowH
@@ -289,7 +290,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         invalidate()
     }
 
-    fun setXp(level: Int, frac: Float, line: String, combo: Int) {
+    fun setXp(level: Int, frac: Float, line: String, combo: Int, streak: Int) {
+        this.streak = streak
         val now = SystemClock.uptimeMillis()
         if (level > this.level && this.level > 0 && animStart > 0) {
             animFrom = 0f; animTo = frac; animStart = now
@@ -399,61 +401,70 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private fun drawStrip(c: Canvas, now: Long) {
         val t = theme
         val w = width.toFloat()
-        // level badge + xp bar (style chosen in settings)
-        val bcx = badgeW / 2f
-        val bcy = topH / 2f - dp(1f)
+
+        // ---- row 1: suggestions (full width)
+        val slotW = w / 3f
+        val textY = sugH / 2f + dp(1f)
+        for (i in 0..2) {
+            val s = suggestions[i]
+            val x0 = slotW * i
+            if (mode == Mode.STRIP && stripPressed == i && s.isNotEmpty()) {
+                keyPaint.shader = null
+                keyPaint.color = withAlpha(t.keyPressed, 160)
+                rect.set(x0 + dp(2f), dp(2f), x0 + slotW - dp(2f), sugH - dp(1f))
+                c.drawRoundRect(rect, dp(8f), dp(8f), keyPaint)
+            }
+            if (i > 0 && suggestions.any { it.isNotEmpty() }) {
+                linePaint.shader = null
+                linePaint.color = withAlpha(t.textMuted, 60)
+                c.drawRect(x0 - dp(0.5f), dp(8f), x0 + dp(0.5f), sugH - dp(6f), linePaint)
+            }
+            if (s.isEmpty()) continue
+            textPaint.typeface = if (i == boldIndex) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            textPaint.color = if (i == boldIndex) t.accent2 else t.text
+            fitText(s, slotW - dp(10f), 17f)
+            c.drawText(s, x0 + slotW / 2f, textY - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        }
+
+        // ---- row 2: level circle + xp bar, xp and streak under the bar
+        val r = dp(14f)
+        val bcx = padX + dp(5f) + r
+        val bcy = sugH + (topH - sugH) / 2f
+        val barCy = bcy - dp(5f)
         val blue = currentBlue(now)
         val animating = animTo > blue + 0.0001f
         val whiteAlpha = (255 * min(1f, (now - animStart).toFloat() / 120f)).toInt()
-        renderer.drawBadge(c, xpStyle, t, bcx, bcy, dp(17f), level, blue, stripPressed == -2 && mode == Mode.STRIP)
-        val barH = if (xpStyle == "club") dp(22f) else dp(6f)
-        val barY = topH - barH - dp(1f)
-        renderer.drawBar(c, xpStyle, t, badgeW, w - dp(6f), barY + barH / 2f, blue, level,
-            if (animating) animTo else blue, whiteAlpha)
+        renderer.drawBadge(c, xpStyle, t, bcx, bcy, r, level, blue, stripPressed == -2 && mode == Mode.STRIP)
+        val barL = bcx + r + dp(8f)
+        val barR = w - padX - dp(5f)
+        renderer.drawBar(c, xpStyle, t, barL, barR, barCy, blue, level,
+            if (animating) animTo else blue, whiteAlpha, circleR = r, circleCy = bcy)
         if (animating) postInvalidateOnAnimation()
+        val textR = if (xpStyle == "club") barR - r * 2 - dp(7f) else barR
 
-        // suggestions or idle info
-        val any = suggestions.any { it.isNotEmpty() }
-        val area = w - badgeW
-        val slotW = area / 3f
-        val textY = (topH - barH) / 2f
-        if (any) {
-            for (i in 0..2) {
-                val s = suggestions[i]
-                val x0 = badgeW + slotW * i
-                if (mode == Mode.STRIP && stripPressed == i && s.isNotEmpty()) {
-                    keyPaint.color = withAlpha(t.keyPressed, 160)
-                    rect.set(x0 + dp(2f), dp(5f), x0 + slotW - dp(2f), barY - dp(3f))
-                    c.drawRoundRect(rect, dp(8f), dp(8f), keyPaint)
-                }
-                if (i > 0) {
-                    linePaint.color = withAlpha(t.textMuted, 60)
-                    c.drawRect(x0 - dp(0.5f), dp(14f), x0 + dp(0.5f), barY - dp(10f), linePaint)
-                }
-                if (s.isEmpty()) continue
-                textPaint.typeface = if (i == boldIndex) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                textPaint.color = if (i == boldIndex) t.accent2 else t.text
-                fitText(s, slotW - dp(10f), 17f)
-                c.drawText(s, x0 + slotW / 2f, textY - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
-            }
-        } else {
-            textPaint.typeface = Typeface.DEFAULT
-            textPaint.color = t.textMuted
-            fitText(xpLine, area - dp(70f), 13f)
-            c.drawText(xpLine, badgeW + area / 2f - dp(20f), textY - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        val ty = bcy + dp(11f)
+        textPaint.typeface = Typeface.DEFAULT_BOLD
+        textPaint.textSize = sp(11f)
+        textPaint.textAlign = Paint.Align.LEFT
+        textPaint.color = t.text
+        c.drawText(xpLine, barL, ty, textPaint)
+        if (streak > 0) {
+            textPaint.textAlign = Paint.Align.RIGHT
+            textPaint.color = t.accent2
+            c.drawText("🔥 $streak día" + (if (streak == 1) "" else "s"), textR, ty, textPaint)
         }
+        textPaint.textAlign = Paint.Align.CENTER
         if (combo >= 5 && now < comboExpire) {
-            val label = "🔥x" + String.format("%.1f", XpManager.comboMultiplier(combo))
-            textPaint.typeface = Typeface.DEFAULT_BOLD
-            textPaint.textSize = sp(11f)
-            textPaint.color = t.accent
+            val label = "⚡x" + String.format("%.1f", XpManager.comboMultiplier(combo))
             val pulse = 1f + 0.08f * sin(now / 120.0).toFloat()
             textPaint.textSize = sp(11f) * pulse
-            c.drawText(label, w - dp(30f), dp(12f), textPaint)
+            textPaint.color = t.accent
+            c.drawText(label, (barL + textR) / 2f, ty, textPaint)
             postInvalidateDelayed(60)
         } else if (combo >= 5 && now - comboExpire < 200) {
             postInvalidateDelayed(60)
         }
+        textPaint.typeface = Typeface.DEFAULT
     }
 
     private fun currentBlue(now: Long): Float {
@@ -788,9 +799,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return best
     }
 
-    private fun stripIndexAt(x: Float): Int {
-        if (x < badgeW) return -2
-        val i = ((x - badgeW) / ((width - badgeW) / 3f)).toInt().coerceIn(0, 2)
+    private fun stripIndexAt(x: Float, y: Float): Int {
+        if (y >= sugH) return -2   // xp row opens the profile
+        val i = (x / (width / 3f)).toInt().coerceIn(0, 2)
         return if (suggestions[i].isNotEmpty()) i else -1
     }
 
@@ -879,7 +890,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
         if (y < topH) {
             mode = Mode.STRIP
-            stripPressed = stripIndexAt(x)
+            stripPressed = stripIndexAt(x, y)
             invalidate()
             return
         }
@@ -1017,7 +1028,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             }
             Mode.DELSWIPE -> if (delSteps > 0) listener.onDeleteWords(delSteps)
             Mode.STRIP -> {
-                val i = stripIndexAt(x)
+                val i = stripIndexAt(x, y)
                 if (i == stripPressed) {
                     if (i == -2) listener.onBadge() else if (i >= 0) listener.onSuggestion(i)
                 }

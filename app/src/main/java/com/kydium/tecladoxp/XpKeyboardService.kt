@@ -275,9 +275,10 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val v = kv ?: return
         val (lvl, into, need) = XpManager.levelInfo()
         val frac = if (lvl >= XpManager.MAX_LEVEL) 1f else into.toFloat() / need
-        val line = if (lvl >= XpManager.MAX_LEVEL) "${XpManager.titleFor(lvl)} · NIVEL MÁXIMO"
-        else "${XpManager.titleFor(lvl)} · $into / $need XP"
-        v.setXp(lvl, frac, line, XpManager.combo)
+        val line = if (lvl >= XpManager.MAX_LEVEL) "NIVEL MÁXIMO" else "$into / $need XP"
+        val today = java.time.LocalDate.now().toEpochDay()
+        val streak = if (XpManager.lastDay >= today - 1) XpManager.streakDays else 0
+        v.setXp(lvl, frac, line, XpManager.combo, streak)
     }
 
     private fun refreshSuggestions() {
