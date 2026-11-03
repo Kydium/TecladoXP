@@ -1,0 +1,661 @@
+package com.kydium.tecladoxp
+
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.inputmethodservice.InputMethodService
+import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.text.InputType
+import android.view.KeyEvent
+import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
+
+class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
+
+    private var kv: KeyboardView? = null
+    private lateinit var dict: Dictionary
+    private lateinit var settings: SharedPreferences
+    private val main = Handler(Looper.getMainLooper())
+    private lateinit var worker: Handler
+    private var workerThread: HandlerThread? = null
+    private var vibrator: Vibrator? = null
+
+    private val composing = StringBuilder()
+
+    // per-field flags
+    private var predictionsOn = true
+    private var autoCorrectOn = true
+    private var noLearn = false
+    private var directMode = false      // commit letters without composing (passwords, numbers…)
+    private var rawWordLen = 0          // letters typed in direct mode (for XP)
+
+    // user settings
+    private var vibrateOn = true
+    private var doubleSpaceOn = true
+    private var autoCorrectSetting = true
+    private var glideSetting = true
+
+    // editing state
+    private var lastWordWasGlide = false
+    private var lastCorrection: Pair<String, String>? = null   // (typed, corrected)
+    private var autoSpace = false
+    private var lastSpaceTime = 0L
+    private var prevWord: String? = null
+    private var lastShiftTime = 0L
+    private var selStart = 0
+    private var selEnd = 0
+
+    private var sugFor: String? = null
+    private var sugResult: Suggestions? = null
+    private var slots: List<String> = listOf("", "", "")
+
+    // ================================================================= lifecycle
+
+    override fun onCreate() {
+        super.onCreate()
+        XpManager.init(this)
+        settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        dict = Dictionary(filesDir)
+        val th = HandlerThread("tecladoxp-dict")
+        th.start()
+        workerThread = th
+        worker = Handler(th.looper)
+        worker.post {
+            try {
+                assets.open("es.txt").use { dict.load(it) }
+            } catch (_: Exception) {
+            }
+            main.post { refreshSuggestions() }
+        }
+        vibrator = if (Build.VERSION.SDK_INT >= 31) {
+            getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+    }
+
+    override fun onDestroy() {
+        dict.saveAsync()
+        workerThread?.quitSafely()
+        super.onDestroy()
+    }
+
+    override fun onEvaluateFullscreenMode(): Boolean = false
+
+    override fun onCreateInputView(): View {
+        val v = KeyboardView(this, this)
+        kv = v
+        applySettings()
+        refreshXp()
+        return v
+    }
+
+    private fun applySettings() {
+        val v = kv ?: return
+        v.theme = Themes.byId(settings.getString("theme", "noche"))
+            .let { if (it.unlockLevel <= XpManager.level()) it else Themes.all[0] }
+        v.heightScale = when (settings.getInt("height", 1)) { 0 -> 0.88f; 2 -> 1.14f; else -> 1f }
+        v.showHints = settings.getBoolean("hints", true)
+        v.showFloatingXp = settings.getBoolean("floatxp", true)
+        vibrateOn = settings.getBoolean("vibrate", true)
+        doubleSpaceOn = settings.getBoolean("doublespace", true)
+        autoCorrectSetting = settings.getBoolean("autocorrect", true)
+        glideSetting = settings.getBoolean("glide", true)
+    }
+
+    override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        val v = kv ?: return
+        applySettings()
+        composing.setLength(0)
+        lastCorrection = null
+        autoSpace = false
+        lastWordWasGlide = false
+        prevWord = null
+        rawWordLen = 0
+        selStart = info.initialSelStart
+        selEnd = info.initialSelEnd
+
+        val cls = info.inputType and InputType.TYPE_MASK_CLASS
+        val variation = info.inputType and InputType.TYPE_MASK_VARIATION
+        predictionsOn = true
+        autoCorrectOn = autoCorrectSetting
+        noLearn = false
+        directMode = false
+        var startLayout = LayoutType.LETTERS
+        when (cls) {
+            InputType.TYPE_CLASS_NUMBER, InputType.TYPE_CLASS_PHONE, InputType.TYPE_CLASS_DATETIME -> {
+                startLayout = LayoutType.SYMBOLS
+                predictionsOn = false; autoCorrectOn = false; noLearn = true; directMode = true
+            }
+            InputType.TYPE_CLASS_TEXT -> {
+                if (variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                    variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+                    variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+                ) {
+                    predictionsOn = false; autoCorrectOn = false; noLearn = true; directMode = true
+                }
+                if (variation == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS ||
+                    variation == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS ||
+                    variation == InputType.TYPE_TEXT_VARIATION_URI ||
+                    variation == InputType.TYPE_TEXT_VARIATION_FILTER
+                ) {
+                    autoCorrectOn = false
+                }
+                if (info.inputType and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS != 0) {
+                    autoCorrectOn = false
+                }
+            }
+            else -> {}
+        }
+        if (cls == 0) { // TYPE_NULL: raw key events, keep things simple
+            predictionsOn = false; autoCorrectOn = false; directMode = true
+        }
+        v.glideEnabled = glideSetting && !directMode
+        v.setLayout(startLayout)
+
+        val action = info.imeOptions and EditorInfo.IME_MASK_ACTION
+        val noEnterAction = info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0
+        v.enterLabel = if (noEnterAction) "↵" else when (action) {
+            EditorInfo.IME_ACTION_GO -> "➜"
+            EditorInfo.IME_ACTION_SEARCH -> "⌕"
+            EditorInfo.IME_ACTION_SEND -> "➤"
+            EditorInfo.IME_ACTION_NEXT -> "⇥"
+            EditorInfo.IME_ACTION_DONE -> "✓"
+            EditorInfo.IME_ACTION_PREVIOUS -> "⇤"
+            else -> "↵"
+        }
+        v.shiftState = 0
+        updateShiftAuto()
+        refreshXp()
+        refreshSuggestions()
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+        composing.setLength(0)
+        lastCorrection = null
+        dict.saveAsync()
+    }
+
+    override fun onUpdateSelection(
+        oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int,
+        candidatesStart: Int, candidatesEnd: Int
+    ) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        selStart = newSelStart
+        selEnd = newSelEnd
+        val movedAway = newSelStart != newSelEnd ||
+            (candidatesEnd >= 0 && newSelStart != candidatesEnd) ||
+            (candidatesEnd < 0 && (newSelStart < oldSelStart || newSelStart > oldSelStart + 3))
+        if (composing.isNotEmpty() && movedAway) {
+            // user moved the cursor away from the word being typed
+            composing.setLength(0)
+            currentInputConnection?.finishComposingText()
+            lastWordWasGlide = false
+            lastCorrection = null
+            refreshSuggestions()
+        }
+        if (composing.isEmpty()) updateShiftAuto()
+    }
+
+    // ================================================================= helpers
+
+    private fun ic(): InputConnection? = currentInputConnection
+
+    private fun updateShiftAuto() {
+        val v = kv ?: return
+        if (v.shiftState == 2) return
+        if (v.layout.type != LayoutType.LETTERS) return
+        val ic = ic() ?: return
+        val ei = currentInputEditorInfo ?: return
+        val caps = if (ei.inputType != 0) ic.getCursorCapsMode(ei.inputType) else 0
+        v.shiftState = if (caps != 0) 1 else 0
+    }
+
+    private fun vibrate(ms: Long = 14) {
+        if (!vibrateOn) return
+        val vb = vibrator ?: return
+        try {
+            val amp = if (vb.hasAmplitudeControl()) 90 else VibrationEffect.DEFAULT_AMPLITUDE
+            vb.vibrate(VibrationEffect.createOneShot(ms, amp))
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun matchCase(typed: String, word: String): String {
+        if (word.isEmpty() || typed.isEmpty()) return word
+        return when {
+            typed.length > 1 && typed.all { !it.isLetter() || it.isUpperCase() } -> word.uppercase()
+            typed[0].isUpperCase() -> word.replaceFirstChar { it.uppercaseChar() }
+            else -> word
+        }
+    }
+
+    private fun applyShiftToWord(word: String): String {
+        val v = kv ?: return word
+        return when (v.shiftState) {
+            2 -> word.uppercase()
+            1 -> word.replaceFirstChar { it.uppercaseChar() }
+            else -> word
+        }
+    }
+
+    /** Autocorrect only "real" words: not after @, #, digits, inside URLs… */
+    private fun correctionAllowed(): Boolean {
+        if (!autoCorrectOn) return false
+        val ic = ic() ?: return false
+        val before = ic.getTextBeforeCursor(composing.length + 1, 0)?.toString() ?: return true
+        if (before.length <= composing.length) return true
+        val c = before[0]
+        return c.isWhitespace() || c in "¿¡(\"'«“"
+    }
+
+    private fun refreshXp() {
+        val v = kv ?: return
+        val (lvl, into, need) = XpManager.levelInfo()
+        val frac = if (lvl >= XpManager.MAX_LEVEL) 1f else into.toFloat() / need
+        val line = if (lvl >= XpManager.MAX_LEVEL) "${XpManager.titleFor(lvl)} · NIVEL MÁXIMO"
+        else "${XpManager.titleFor(lvl)} · $into / $need XP"
+        v.setXp(lvl, frac, line, XpManager.combo)
+    }
+
+    private fun refreshSuggestions() {
+        val v = kv ?: return
+        if (!predictionsOn || !dict.loaded) {
+            slots = listOf("", "", "")
+            v.setSuggestions(slots, -1)
+            return
+        }
+        if (composing.isNotEmpty()) {
+            if (lastWordWasGlide) return  // glide alternatives already shown
+            val snapshot = composing.toString()
+            val prev = prevWord
+            worker.removeCallbacksAndMessages(null)
+            worker.post {
+                val r = dict.suggest(snapshot, prev)
+                main.post {
+                    if (composing.toString() == snapshot && !lastWordWasGlide) {
+                        sugFor = snapshot
+                        sugResult = r
+                        showSuggestions(snapshot, r)
+                    }
+                }
+            }
+        } else {
+            sugFor = null
+            sugResult = null
+            val p = dict.predict(prevWord)
+            val cased = p.map { if ((kv?.shiftState ?: 0) > 0) it.replaceFirstChar { c -> c.uppercaseChar() } else it }
+            slots = listOf(cased.getOrElse(1) { "" }, cased.getOrElse(0) { "" }, cased.getOrElse(2) { "" })
+            v.setSuggestions(slots, -1)
+        }
+    }
+
+    private fun showSuggestions(typed: String, r: Suggestions) {
+        val v = kv ?: return
+        val allowed = r.autoCorrect != null && correctionAllowed()
+        slots = r.slots.mapIndexed { i, s ->
+            if (s.isEmpty()) s
+            else if (s == typed) s
+            else matchCase(typed, s)
+        }
+        v.setSuggestions(slots, if (allowed) 1 else -1)
+    }
+
+    private fun currentSuggestions(): Suggestions? {
+        val typed = composing.toString()
+        if (sugFor == typed && sugResult != null) return sugResult
+        if (!dict.loaded) return null
+        val r = dict.suggest(typed, prevWord)
+        sugFor = typed
+        sugResult = r
+        return r
+    }
+
+    private fun gainXp(word: String, kind: WordKind) {
+        val letters = word.count { it.isLetter() }
+        if (letters == 0 || noLearn) return
+        val before = XpManager.level()
+        val r = XpManager.onWord(letters, kind)
+        val v = kv ?: return
+        v.addFloatingXp(r.gained)
+        if (r.leveledUp) {
+            val newThemes = (before + 1..r.level).flatMap { Themes.unlockedAt(it) }
+            val extra = if (newThemes.isNotEmpty()) "Tema ${newThemes.joinToString { it.name }} desbloqueado" else ""
+            v.showLevelUp(r.level, XpManager.titleFor(r.level), extra)
+            vibrate(60)
+        }
+        if (r.dailyBonus > 0) {
+            v.showBanner("🔥 Racha de ${XpManager.streakDays} día" + (if (XpManager.streakDays > 1) "s" else ""), "Bono diario +${r.dailyBonus} XP")
+        }
+        for (a in r.achievements) v.showBanner("🏆 ${a.name}", "${a.desc} · +${a.xp} XP")
+        refreshXp()
+    }
+
+    private fun afterWordCommitted(word: String, kind: WordKind) {
+        if (!noLearn && predictionsOn) {
+            dict.learnWord(word)
+            prevWord?.let { dict.learnBigram(it, word) }
+        }
+        prevWord = word.lowercase()
+        gainXp(word, kind)
+    }
+
+    /** Commit the composing word. Returns (typed, committed). */
+    private fun commitWord(applyCorrection: Boolean): Pair<String, String> {
+        val ic = ic() ?: return Pair("", "")
+        val typed = composing.toString()
+        var final = typed
+        var kind = if (lastWordWasGlide) WordKind.GLIDE else WordKind.TYPED
+        if (applyCorrection && !lastWordWasGlide && correctionAllowed()) {
+            val s = currentSuggestions()
+            val ac = s?.autoCorrect
+            if (ac != null) {
+                final = matchCase(typed, ac)
+                kind = WordKind.AUTOCORRECT
+            }
+        }
+        ic.commitText(final, 1)
+        composing.setLength(0)
+        lastWordWasGlide = false
+        afterWordCommitted(final, kind)
+        return Pair(typed, final)
+    }
+
+    private fun flushRawWord() {
+        if (rawWordLen > 0 && !noLearn) gainXp("x".repeat(rawWordLen), WordKind.TYPED)
+        rawWordLen = 0
+    }
+
+    // ================================================================= key handling
+
+    override fun onPressFeedback() = vibrate()
+
+    override fun onKey(key: Key) {
+        when (key.code) {
+            Codes.SHIFT -> handleShift()
+            Codes.DELETE -> handleDelete()
+            Codes.SYMBOLS -> { kv?.setLayout(LayoutType.SYMBOLS); lastCorrection = null }
+            Codes.SYMBOLS2 -> { kv?.setLayout(LayoutType.SYMBOLS2); lastCorrection = null }
+            Codes.LETTERS -> { kv?.setLayout(LayoutType.LETTERS); updateShiftAuto() }
+            Codes.ENTER -> handleEnter()
+            Codes.SPACE -> handleSpace()
+            else -> handleText(String(Character.toChars(key.code)))
+        }
+    }
+
+    override fun onAltText(text: String) = handleText(text)
+
+    private fun handleShift() {
+        val v = kv ?: return
+        val now = SystemClock.uptimeMillis()
+        v.shiftState = when (v.shiftState) {
+            0 -> 1
+            1 -> if (now - lastShiftTime < 350) 2 else 0
+            else -> 0
+        }
+        lastShiftTime = now
+        if (composing.isEmpty()) refreshSuggestions()
+    }
+
+    private fun handleText(s: String) {
+        val ic = ic() ?: return
+        val v = kv ?: return
+        lastCorrection = null
+        val isLetter = s.codePointCount(0, s.length) == 1 && Character.isLetter(s.codePointAt(0))
+
+        if (directMode) {
+            val out = if (isLetter && v.shiftState > 0) s.uppercase() else s
+            ic.commitText(out, 1)
+            if (isLetter) rawWordLen++ else flushRawWord()
+            if (v.shiftState == 1) v.shiftState = 0
+            return
+        }
+
+        if (isLetter) {
+            if (lastWordWasGlide && composing.isNotEmpty()) {
+                commitWord(false)
+                ic.commitText(" ", 1)
+            }
+            lastWordWasGlide = false
+            val c = if (v.shiftState > 0) s.uppercase() else s
+            composing.append(c)
+            ic.setComposingText(composing, 1)
+            if (v.shiftState == 1) v.shiftState = 0
+            autoSpace = false
+            refreshSuggestions()
+            return
+        }
+
+        val isPunct = s in setOf(".", ",", "!", "?", ";", ":")
+        if (composing.isNotEmpty()) {
+            commitWord(isPunct)
+        } else if (autoSpace && isPunct) {
+            val before = ic.getTextBeforeCursor(1, 0)?.toString()
+            if (before == " ") ic.deleteSurroundingText(1, 0)
+        }
+        ic.commitText(s, 1)
+        if (autoSpace && isPunct) {
+            ic.commitText(" ", 1)
+        } else {
+            autoSpace = false
+        }
+        lastWordWasGlide = false
+        if (s == "." || s == "!" || s == "?") prevWord = null
+        refreshSuggestions()
+    }
+
+    private fun handleSpace() {
+        val ic = ic() ?: return
+        val v = kv ?: return
+        val now = SystemClock.uptimeMillis()
+        if (directMode) {
+            flushRawWord()
+            ic.commitText(" ", 1)
+            return
+        }
+        if (composing.isNotEmpty()) {
+            val (typed, final) = commitWord(true)
+            ic.commitText(" ", 1)
+            lastCorrection = if (final != typed) Pair(typed, final) else null
+            autoSpace = false
+        } else {
+            val before = ic.getTextBeforeCursor(2, 0)?.toString()
+            val canPeriod = doubleSpaceOn && before != null && before.length == 2 &&
+                before[1] == ' ' && before[0].isLetterOrDigit()
+            if (canPeriod && (autoSpace || now - lastSpaceTime < 700)) {
+                ic.deleteSurroundingText(1, 0)
+                ic.commitText(". ", 1)
+                prevWord = null
+            } else {
+                ic.commitText(" ", 1)
+            }
+            lastCorrection = null
+            autoSpace = false
+        }
+        lastSpaceTime = now
+        if (v.layout.type != LayoutType.LETTERS) v.setLayout(LayoutType.LETTERS)
+        refreshSuggestions()
+    }
+
+    private fun handleDelete() {
+        val ic = ic() ?: return
+        val lc = lastCorrection
+        lastCorrection = null
+        if (lc != null && composing.isEmpty()) {
+            // undo autocorrection, Gboard style
+            val before = ic.getTextBeforeCursor(lc.second.length + 1, 0)?.toString()
+            if (before == lc.second + " ") {
+                ic.deleteSurroundingText(lc.second.length + 1, 0)
+                dict.forceLearn(lc.first)
+                composing.append(lc.first)
+                ic.setComposingText(composing, 1)
+                sugFor = null
+                refreshSuggestions()
+                return
+            }
+        }
+        if (composing.isNotEmpty()) {
+            if (lastWordWasGlide) {
+                composing.setLength(0)
+            } else {
+                val cp = Character.charCount(composing.codePointBefore(composing.length))
+                composing.setLength(composing.length - cp)
+            }
+            lastWordWasGlide = false
+            if (composing.isEmpty()) ic.commitText("", 1) else ic.setComposingText(composing, 1)
+        } else {
+            val sel = ic.getSelectedText(0)
+            if (!sel.isNullOrEmpty()) ic.commitText("", 1)
+            else sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+            if (directMode && rawWordLen > 0) rawWordLen--
+        }
+        autoSpace = false
+        if (composing.isEmpty()) updateShiftAuto()
+        refreshSuggestions()
+    }
+
+    override fun onDeleteRepeat() {
+        lastCorrection = null
+        handleDelete()
+    }
+
+    override fun onDeleteWords(count: Int) {
+        val ic = ic() ?: return
+        lastCorrection = null
+        var n = count
+        if (composing.isNotEmpty()) {
+            composing.setLength(0)
+            lastWordWasGlide = false
+            ic.commitText("", 1)
+            n--
+        }
+        for (i in 0 until n) {
+            val before = ic.getTextBeforeCursor(64, 0)?.toString() ?: break
+            if (before.isEmpty()) break
+            var j = before.length
+            while (j > 0 && before[j - 1].isWhitespace()) j--
+            while (j > 0 && !before[j - 1].isWhitespace()) j--
+            ic.deleteSurroundingText(before.length - j, 0)
+        }
+        autoSpace = false
+        vibrate(25)
+        updateShiftAuto()
+        refreshSuggestions()
+    }
+
+    private fun handleEnter() {
+        val ic = ic() ?: return
+        if (directMode) flushRawWord()
+        if (composing.isNotEmpty()) commitWord(true)
+        lastCorrection = null
+        autoSpace = false
+        prevWord = null
+        lastWordWasGlide = false
+        val ei = currentInputEditorInfo
+        val action = (ei?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        val noEnterAction = ((ei?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
+        if (!noEnterAction && action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+            ic.performEditorAction(action)
+        } else {
+            sendKeyChar('\n')
+        }
+        refreshSuggestions()
+    }
+
+    override fun onCursor(delta: Int) {
+        val ic = ic() ?: return
+        if (composing.isNotEmpty()) {
+            ic.finishComposingText()
+            composing.setLength(0)
+            lastWordWasGlide = false
+        }
+        lastCorrection = null
+        autoSpace = false
+        if (delta > 0 && ic.getTextAfterCursor(1, 0).isNullOrEmpty()) return
+        val pos = (selEnd + delta).coerceAtLeast(0)
+        ic.setSelection(pos, pos)
+        selStart = pos
+        selEnd = pos
+    }
+
+    override fun onGlide(px: FloatArray, py: FloatArray, n: Int) {
+        val ic = ic() ?: return
+        val v = kv ?: return
+        if (!dict.loaded) return
+        lastCorrection = null
+        if (composing.isNotEmpty()) commitWord(!lastWordWasGlide)
+        val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
+        if (before.isNotEmpty() && !before[0].isWhitespace() && before[0] !in "¿¡(\"'«“@#/") ic.commitText(" ", 1)
+
+        val res = dict.glide(px, py, n, v.letterCenters(), v.unitW, v.keyRowH, prevWord)
+        if (res.isEmpty()) {
+            refreshSuggestions()
+            return
+        }
+        val cased = res.map { applyShiftToWord(it) }
+        composing.append(cased[0])
+        ic.setComposingText(composing, 1)
+        lastWordWasGlide = true
+        autoSpace = false
+        if (v.shiftState == 1) v.shiftState = 0
+        slots = listOf(cased.getOrElse(1) { "" }, cased[0], cased.getOrElse(2) { "" })
+        v.setSuggestions(slots, 1)
+    }
+
+    override fun onSuggestion(index: Int) {
+        val ic = ic() ?: return
+        val word = slots.getOrNull(index) ?: return
+        if (word.isEmpty()) return
+        lastCorrection = null
+        if (composing.isNotEmpty()) {
+            val typed = composing.toString()
+            val kind = when {
+                lastWordWasGlide -> WordKind.GLIDE
+                word == typed -> WordKind.TYPED
+                else -> WordKind.SUGGESTION
+            }
+            if (word == typed && !lastWordWasGlide) dict.forceLearn(word)
+            ic.commitText(word, 1)
+            composing.setLength(0)
+            lastWordWasGlide = false
+            afterWordCommitted(word, kind)
+        } else {
+            val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
+            if (before.isNotEmpty() && !before[0].isWhitespace()) ic.commitText(" ", 1)
+            ic.commitText(word, 1)
+            afterWordCommitted(word, WordKind.SUGGESTION)
+        }
+        ic.commitText(" ", 1)
+        autoSpace = true
+        lastSpaceTime = SystemClock.uptimeMillis()
+        kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
+        refreshSuggestions()
+    }
+
+    override fun onBadge() {
+        try {
+            val i = Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            startActivity(i)
+            requestHideSelf(0)
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onSpaceLongPress() {
+        vibrate(30)
+        getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+    }
+}
