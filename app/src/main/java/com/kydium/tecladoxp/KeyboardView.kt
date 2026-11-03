@@ -76,6 +76,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var xpLine = ""
     private var combo = 0
     private var comboExpire = 0L
+    // xp gain animation: the earned part turns white, then fills with color
+    private var animFrom = 0f
+    private var animTo = 0f
+    private var animStart = 0L
+    private val animWhiteMs = 280L
+    private val animFillMs = 650L
 
     // ------------------------------------------------------------------ geometry
     private val topH get() = dp(50f)
@@ -284,6 +290,15 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     fun setXp(level: Int, frac: Float, line: String, combo: Int) {
+        val now = SystemClock.uptimeMillis()
+        if (level > this.level && this.level > 0 && animStart > 0) {
+            animFrom = 0f; animTo = frac; animStart = now
+        } else if (level == this.level && frac > xpFrac + 0.0005f) {
+            animFrom = currentBlue(now); animTo = frac; animStart = now
+        } else {
+            animFrom = frac; animTo = frac
+            if (animStart == 0L) animStart = 1L
+        }
         this.level = level
         this.xpFrac = frac
         this.xpLine = line
@@ -387,10 +402,15 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         // level badge + xp bar (style chosen in settings)
         val bcx = badgeW / 2f
         val bcy = topH / 2f - dp(1f)
-        renderer.drawBadge(c, xpStyle, t, bcx, bcy, dp(17f), level, xpFrac, stripPressed == -2 && mode == Mode.STRIP)
-        val barH = if (xpStyle == "club") dp(17f) else dp(6f)
+        val blue = currentBlue(now)
+        val animating = animTo > blue + 0.0001f
+        val whiteAlpha = (255 * min(1f, (now - animStart).toFloat() / 120f)).toInt()
+        renderer.drawBadge(c, xpStyle, t, bcx, bcy, dp(17f), level, blue, stripPressed == -2 && mode == Mode.STRIP)
+        val barH = if (xpStyle == "club") dp(22f) else dp(6f)
         val barY = topH - barH - dp(1f)
-        renderer.drawBar(c, xpStyle, t, badgeW, w - dp(8f), barY + barH / 2f, xpFrac, level)
+        renderer.drawBar(c, xpStyle, t, badgeW, w - dp(6f), barY + barH / 2f, blue, level,
+            if (animating) animTo else blue, whiteAlpha)
+        if (animating) postInvalidateOnAnimation()
 
         // suggestions or idle info
         val any = suggestions.any { it.isNotEmpty() }
@@ -433,6 +453,19 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             postInvalidateDelayed(60)
         } else if (combo >= 5 && now - comboExpire < 200) {
             postInvalidateDelayed(60)
+        }
+    }
+
+    private fun currentBlue(now: Long): Float {
+        val e = now - animStart
+        return when {
+            e < animWhiteMs -> animFrom
+            e < animWhiteMs + animFillMs -> {
+                val p = (e - animWhiteMs).toFloat() / animFillMs
+                val ease = 1f - (1f - p) * (1f - p)
+                animFrom + (animTo - animFrom) * ease
+            }
+            else -> animTo
         }
     }
 
@@ -505,7 +538,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     textPaint.textSize = sp(if (k.isLetter) 22f else 20f)
                 }
             }
-            c.drawText(label, rect.centerX(), rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+            if (k.code == Codes.EMOJI) drawSmiley(c, rect.centerX(), rect.centerY(), dp(10.5f), t.text)
+            else c.drawText(label, rect.centerX(), rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
             if (showHints && k.hint.isNotEmpty()) {
                 hintPaint.textSize = sp(10f)
                 hintPaint.color = t.textMuted
@@ -671,6 +705,21 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         textPaint.color = withAlpha(Color.WHITE, 230)
         c.drawText(b.subtitle, rect.centerX(), rect.top + h * 0.82f, textPaint)
         return true
+    }
+
+    /** Outline smiley drawn with lines, so it uses the theme's text color (white on dark themes). */
+    private fun drawSmiley(c: Canvas, cx: Float, cy: Float, r: Float, color: Int) {
+        linePaint.shader = null
+        linePaint.style = Paint.Style.STROKE
+        linePaint.strokeWidth = dp(1.8f)
+        linePaint.strokeCap = Paint.Cap.ROUND
+        linePaint.color = color
+        c.drawCircle(cx, cy, r, linePaint)
+        rect.set(cx - r * 0.55f, cy - r * 0.45f, cx + r * 0.55f, cy + r * 0.55f)
+        c.drawArc(rect, 25f, 130f, false, linePaint)
+        linePaint.style = Paint.Style.FILL
+        c.drawCircle(cx - r * 0.35f, cy - r * 0.25f, dp(1.4f), linePaint)
+        c.drawCircle(cx + r * 0.35f, cy - r * 0.25f, dp(1.4f), linePaint)
     }
 
     private fun withAlpha(color: Int, a: Int) = (color and 0x00FFFFFF) or (a.coerceIn(0, 255) shl 24)

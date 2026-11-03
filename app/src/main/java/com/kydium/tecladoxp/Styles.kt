@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
@@ -15,6 +14,7 @@ import android.util.DisplayMetrics
 import android.util.TypedValue
 import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.random.Random
@@ -71,9 +71,7 @@ class StyleRenderer(private val dm: DisplayMetrics) {
     private val italicBold: Typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD_ITALIC)
 
     // Club Campestre palette (same as club-xp.js)
-    private val clubBlue = Color.parseColor("#3FA9FF")
-    private val clubLight = Color.parseColor("#7CC8FF")
-    private val clubDark = Color.parseColor("#2F8BE6")
+    private val clubBlue = Color.parseColor("#2F74CC")
 
     companion object {
         fun withAlpha(color: Int, a: Int) = (color and 0x00FFFFFF) or (a.coerceIn(0, 255) shl 24)
@@ -94,6 +92,26 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         text.getTextBounds(s, 0, s.length, bounds)
         // textAlign is CENTER: the advance box is centered on x, so correct by the glyph box offset
         c.drawText(s, cx + text.measureText(s) / 2f - bounds.exactCenterX(), cy - bounds.exactCenterY(), text)
+    }
+
+    /** Dark navy circle with white ring and bold italic number (GTA RP style). */
+    private fun rpCircle(c: Canvas, cx: Float, cy: Float, r: Float, num: String, pressed: Boolean) {
+        fill.shader = null
+        fill.color = Color.argb(70, 0, 0, 0)
+        c.drawCircle(cx, cy + dp(1f), r + dp(1.5f), fill)
+        fill.color = if (pressed) Color.parseColor("#1D3E73") else Color.parseColor("#0B1E3F")
+        c.drawCircle(cx, cy, r, fill)
+        stroke.shader = null
+        stroke.strokeWidth = max(dp(1.6f), r * 0.13f)
+        stroke.color = Color.WHITE
+        c.drawCircle(cx, cy, r - stroke.strokeWidth / 2f, stroke)
+        text.typeface = italicBold
+        text.textSize = r * (if (num.length >= 3) 0.85f else 1.15f)
+        text.color = Color.parseColor("#0A0A0A")
+        drawCentered(c, num, cx + dp(0.8f), cy + dp(1f))
+        text.color = Color.WHITE
+        drawCentered(c, num, cx, cy)
+        text.typeface = Typeface.DEFAULT
     }
 
     // ================================================================ badge
@@ -122,24 +140,7 @@ class StyleRenderer(private val dm: DisplayMetrics) {
                 drawCentered(c, num, cx, cy)
                 text.isFakeBoldText = false
             }
-            "club" -> {
-                // glow
-                fill.color = withAlpha(clubBlue, 50)
-                c.drawCircle(cx, cy, r + dp(4f), fill)
-                fill.shader = RadialGradient(cx - r * 0.3f, cy - r * 0.4f, r * 1.4f,
-                    Color.parseColor("#2A2F3A"), Color.parseColor("#0B0D12"), Shader.TileMode.CLAMP)
-                c.drawCircle(cx, cy, r, fill)
-                fill.shader = null
-                stroke.strokeWidth = dp(2.6f)
-                stroke.color = if (pressed) Color.WHITE else clubBlue
-                c.drawCircle(cx, cy, r, stroke)
-                text.typeface = italicBold
-                text.textSize = sp(if (level >= 100) 13f else 16f)
-                text.color = Color.BLACK
-                drawCentered(c, num, cx, cy + dp(1.2f))
-                text.color = Color.WHITE
-                drawCentered(c, num, cx, cy)
-            }
+            "club" -> rpCircle(c, cx, cy, r, num, pressed)
             "pixel" -> {
                 val s = r * 0.92f
                 fill.color = t.accent
@@ -232,8 +233,30 @@ class StyleRenderer(private val dm: DisplayMetrics) {
 
     // ================================================================ bar
 
-    /** Bar along [left, right], vertically centered on [cy]. */
-    fun drawBar(c: Canvas, style: String, t: KbTheme, left: Float, right: Float, cy: Float, frac: Float, level: Int) {
+    /**
+     * Bar along [left, right], vertically centered on [cy].
+     * [whiteTo] > [frac] paints the just-earned part in white (it then fills with color).
+     */
+    fun drawBar(
+        c: Canvas, style: String, t: KbTheme, left: Float, right: Float, cy: Float, frac: Float, level: Int,
+        whiteTo: Float = frac, whiteAlpha: Int = 255
+    ) {
+        drawBarInner(c, style, t, left, right, cy, frac, level, whiteTo, whiteAlpha)
+        val f = frac.coerceIn(0f, 1f)
+        if (style != "club" && whiteTo > f) {
+            // white "just earned" part for the other styles
+            val hh = if (style == "minima") dp(1f) else dp(2.6f)
+            fill.shader = null
+            fill.color = withAlpha(Color.WHITE, whiteAlpha)
+            rect.set(left + (right - left) * f, cy - hh, left + (right - left) * whiteTo.coerceAtMost(1f), cy + hh)
+            c.drawRoundRect(rect, hh, hh, fill)
+        }
+    }
+
+    private fun drawBarInner(
+        c: Canvas, style: String, t: KbTheme, left: Float, right: Float, cy: Float, frac: Float, level: Int,
+        whiteTo: Float, whiteAlpha: Int
+    ) {
         fill.shader = null
         val f = frac.coerceIn(0f, 1f)
         when (style) {
@@ -260,43 +283,37 @@ class StyleRenderer(private val dm: DisplayMetrics) {
                 }
             }
             "club" -> {
-                val nr = dp(8.5f)
-                val barR = right - nr * 2 - dp(2f)
-                val h = dp(7f)
-                val top = cy - h / 2f
-                fill.color = Color.argb(160, 0, 0, 0)
-                c.drawRect(left, top, barR, top + h, fill)
-                val fr = left + (barR - left) * f
-                if (fr > left) {
-                    fill.color = withAlpha(clubBlue, 70)
-                    c.drawRect(left, top - dp(2f), fr, top + h + dp(2f), fill)
-                    fill.shader = LinearGradient(0f, top, 0f, top + h, clubLight, clubDark, Shader.TileMode.CLAMP)
-                    c.drawRect(left, top, fr, top + h, fill)
-                    fill.shader = null
-                }
-                // 10 segments
-                fill.color = Color.argb(160, 0, 0, 0)
-                val seg = (barR - left) / 10f
-                for (i in 1..9) {
-                    val x = left + seg * i
-                    c.drawRect(x - dp(1f), top, x + dp(1f), top + h, fill)
-                }
-                fill.color = Color.argb(45, 255, 255, 255)
-                c.drawRect(left, top - dp(0.7f), barR, top, fill)
-                c.drawRect(left, top + h, barR, top + h + dp(0.7f), fill)
-                // next level circle
+                // GTA-style RP bar: 10 separate dashes between the two level circles
+                val nr = dp(11f)
                 val ncx = right - nr
-                fill.color = Color.parseColor("#12151C")
-                c.drawCircle(ncx, cy, nr, fill)
-                stroke.shader = null
-                stroke.strokeWidth = dp(1.8f)
-                stroke.color = Color.argb(95, 255, 255, 255)
-                c.drawCircle(ncx, cy, nr, stroke)
-                text.typeface = italicBold
-                text.textSize = sp(if (level >= 99) 7f else 9f)
-                text.color = Color.WHITE
-                drawCentered(c, (level + 1).toString(), ncx, cy)
-                text.typeface = Typeface.DEFAULT
+                val bl = left + dp(2f)
+                val br = ncx - nr - dp(7f)
+                val h = dp(5f)
+                val gap = dp(3f)
+                val segW = (br - bl - gap * 9) / 10f
+                val total = br - bl
+                val white = whiteTo.coerceIn(f, 1f)
+                for (i in 0 until 10) {
+                    val x0 = bl + i * (segW + gap)
+                    val x1 = x0 + segW
+                    fill.color = Color.argb(150, 11, 30, 63)
+                    c.drawRect(x0, cy - h / 2f, x1, cy + h / 2f, fill)
+                    // segment positions in "bar fraction" space ignore gaps visually but map linearly
+                    val s0 = (x0 - bl) / total
+                    val s1 = (x1 - bl) / total
+                    val blueEnd = min(s1, f)
+                    if (blueEnd > s0) {
+                        fill.color = clubBlue
+                        c.drawRect(x0, cy - h / 2f, bl + blueEnd * total, cy + h / 2f, fill)
+                    }
+                    val wStart = max(s0, f)
+                    val wEnd = min(s1, white)
+                    if (wEnd > wStart) {
+                        fill.color = withAlpha(Color.WHITE, whiteAlpha)
+                        c.drawRect(bl + wStart * total, cy - h / 2f, bl + wEnd * total, cy + h / 2f, fill)
+                    }
+                }
+                rpCircle(c, ncx, cy, nr, (level + 1).toString(), false)
             }
             "pixel" -> {
                 val blocks = 20
