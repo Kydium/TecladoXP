@@ -275,7 +275,7 @@ class StyleRenderer(private val dm: DisplayMetrics) {
     ) {
         drawBarInner(c, style, t, left, right, cy, frac, level, whiteTo, whiteAlpha, circleR, circleCy)
         val f = frac.coerceIn(0f, 1f)
-        if (style != "club" && whiteTo > f) {
+        if (style != "club" && style != "bloques" && whiteTo > f) {
             // white "just earned" part for the other styles
             val hh = if (style == "minima") dp(1f) else dp(2.6f)
             fill.shader = null
@@ -293,29 +293,37 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         val f = frac.coerceIn(0f, 1f)
         when (style) {
             "bloques" -> {
-                val h = dp(5.5f)
-                val top = cy - h / 2f
-                // black outline + dark empty track
-                fill.color = Color.parseColor("#000000")
-                c.drawRect(left - dp(1.3f), top - dp(1.3f), right + dp(1.3f), top + h + dp(1.3f), fill)
-                fill.color = Color.parseColor("#2B3B1F")
-                c.drawRect(left, top, right, top + h, fill)
-                fill.color = Color.parseColor("#1B2614")
-                c.drawRect(left, top + h * 0.6f, right, top + h, fill)
-                val fr = left + (right - left) * f
-                if (fr > left) {
-                    fill.color = Color.parseColor("#5DB31A")
-                    c.drawRect(left, top, fr, top + h, fill)
-                    fill.color = Color.parseColor("#80FF20")
-                    c.drawRect(left, top, fr, top + h * 0.6f, fill)
+                // pixel-art bar: every pixel is a square block, 5 rows tall with shading
+                val px = dp(2.2f)
+                val cols = ((right - left) / px).toInt()
+                val x0 = Math.round(left + ((right - left) - cols * px) / 2f).toFloat()
+                val top = Math.round(cy - 2.5f * px).toFloat()
+                val aa = fill.isAntiAlias
+                fill.isAntiAlias = false
+                fill.color = Color.parseColor("#0A0A0A")
+                c.drawRect(x0 - px, top - px, x0 + (cols + 1) * px, top + 6 * px, fill)
+                val full = intArrayOf(0xFFC6FF7A.toInt(), 0xFF80FF20.toInt(), 0xFF6EE01A.toInt(), 0xFF4FA414.toInt(), 0xFF2F6B0B.toInt())
+                val fullSep = intArrayOf(0xFF5FB61A.toInt(), 0xFF3F8A10.toInt(), 0xFF3F8A10.toInt(), 0xFF2F6B0B.toInt(), 0xFF1F4A07.toInt())
+                val empty = intArrayOf(0xFF4E5A44.toInt(), 0xFF2E3828.toInt(), 0xFF2A3324.toInt(), 0xFF1E261A.toInt(), 0xFF141A11.toInt())
+                val emptySep = intArrayOf(0xFF161C12.toInt(), 0xFF0E120B.toInt(), 0xFF0E120B.toInt(), 0xFF0A0D08.toInt(), 0xFF070906.toInt())
+                val white = intArrayOf(0xFFFFFFFF.toInt(), 0xFFF2FFE6.toInt(), 0xFFE6FFD2.toInt(), 0xFFCCF0B0.toInt(), 0xFFA8D48A.toInt())
+                val filledCols = (cols * f).toInt()
+                val whiteCols = (cols * whiteTo.coerceIn(f, 1f)).toInt()
+                val cellW = cols / 18f
+                for (i in 0 until cols) {
+                    val sep = i > 0 && (i / cellW).toInt() != ((i - 1) / cellW).toInt()
+                    val pal = when {
+                        i < filledCols -> if (sep) fullSep else full
+                        i < whiteCols -> if (whiteAlpha >= 128) white else if (sep) emptySep else empty
+                        else -> if (sep) emptySep else empty
+                    }
+                    val x = x0 + i * px
+                    for (row in 0 until 5) {
+                        fill.color = pal[row]
+                        c.drawRect(x, top + row * px, x + px, top + (row + 1) * px, fill)
+                    }
                 }
-                // notches between the 18 cells
-                val seg = (right - left) / 18f
-                for (i in 1..17) {
-                    val x = left + seg * i
-                    fill.color = if (x < fr) Color.parseColor("#3C7A12") else Color.parseColor("#0C120A")
-                    c.drawRect(x - dp(0.9f), top, x + dp(0.9f), top + h, fill)
-                }
+                fill.isAntiAlias = aa
             }
             "club" -> {
                 // GTA-style RP bar: 10 separate dashes between the two level circles
