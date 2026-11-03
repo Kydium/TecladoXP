@@ -482,6 +482,85 @@ class MainActivity : Activity() {
         parent.addView(row)
     }
 
+    private val REQ_ORB = 41
+    private val REQ_LEVEL = 42
+    private var preview: SoundFx? = null
+
+    /** Row to pick a custom sound file from the phone (or go back to the built-in one). */
+    private fun soundRow(parent: LinearLayout, label: String, file: String, req: Int) {
+        val f = SoundFx.customFile(this, file)
+        val custom = f.exists()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpi(8f), 0, dpi(8f))
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(text(label, 15f, textC))
+        col.addView(text(if (custom) "Personalizado 🎵" else "Sonido incluido", 12f, if (custom) accent2 else muted))
+        row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val pick = button(if (custom) "Cambiar" else "Elegir", false) {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "audio/*"
+            }
+            try { startActivityForResult(i, req) } catch (_: Exception) {
+                Toast.makeText(this, "No se pudo abrir el selector de archivos", Toast.LENGTH_SHORT).show()
+            }
+        }
+        row.addView(pick)
+        if (custom) {
+            val reset = button("✕", false) {
+                f.delete()
+                Toast.makeText(this, "Volviste al sonido incluido", Toast.LENGTH_SHORT).show()
+                render()
+            }
+            row.addView(reset, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                leftMargin = dpi(6f)
+            })
+        }
+        parent.addView(row)
+    }
+
+    @Deprecated("framework callback")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri = data?.data ?: return
+        if (resultCode != RESULT_OK) return
+        val name = when (requestCode) {
+            REQ_ORB -> SoundFx.ORB_FILE
+            REQ_LEVEL -> SoundFx.LEVEL_FILE
+            else -> return
+        }
+        try {
+            val dest = SoundFx.customFile(this, name)
+            contentResolver.openInputStream(uri)?.use { input ->
+                dest.outputStream().use { input.copyTo(it) }
+            }
+            if (dest.length() > 3_000_000) {
+                dest.delete()
+                Toast.makeText(this, "El sonido es muy largo, elige uno corto", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(this, "Sonido guardado 🎵", Toast.LENGTH_SHORT).show()
+                // short preview
+                val fx = preview ?: SoundFx(this).also { preview = it }
+                fx.preload()
+                window.decorView.postDelayed({
+                    if (name == SoundFx.ORB_FILE) fx.playOrb() else fx.playLevelUp()
+                }, 400)
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "No se pudo copiar el sonido: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+        render()
+    }
+
+    override fun onDestroy() {
+        preview?.release()
+        super.onDestroy()
+    }
+
     private fun renderSettings() {
         val c = card()
         sectionTitle(c, "Ajustes")
@@ -492,6 +571,8 @@ class MainActivity : Activity() {
         switchRow(c, "Números en las teclas", "Mantén presionada la fila de arriba", "hints", true)
         switchRow(c, "Mostrar +XP flotante", "", "floatxp", true)
         switchRow(c, "Sonidos de XP", "Un \"pling\" al ganar XP y una melodía al subir de nivel", "xpsound", true)
+        soundRow(c, "Sonido al ganar XP", SoundFx.ORB_FILE, REQ_ORB)
+        soundRow(c, "Sonido al subir de nivel", SoundFx.LEVEL_FILE, REQ_LEVEL)
 
         c.addView(text("Altura del teclado", 15f, textC).apply { setPadding(0, dpi(12f), 0, dpi(8f)) })
         val h = settings.getInt("height", 1)

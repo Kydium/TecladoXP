@@ -117,6 +117,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         v.showFloatingXp = settings.getBoolean("floatxp", true)
         vibrateOn = settings.getBoolean("vibrate", true)
         soundOn = settings.getBoolean("xpsound", true)
+        if (soundOn) (sounds ?: SoundFx(this).also { sounds = it }).preload()
         doubleSpaceOn = settings.getBoolean("doublespace", true)
         autoCorrectSetting = settings.getBoolean("autocorrect", true)
         glideSetting = settings.getBoolean("glide", true)
