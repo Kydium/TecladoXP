@@ -448,11 +448,6 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         textPaint.textAlign = Paint.Align.LEFT
         textPaint.color = t.text
         c.drawText(xpLine, barL, ty, textPaint)
-        if (streak > 0) {
-            textPaint.textAlign = Paint.Align.RIGHT
-            textPaint.color = t.accent2
-            c.drawText("🔥 $streak día" + (if (streak == 1) "" else "s"), textR, ty, textPaint)
-        }
         textPaint.textAlign = Paint.Align.CENTER
         if (combo >= 5 && now < comboExpire) {
             val label = "⚡x" + String.format("%.1f", XpManager.comboMultiplier(combo))
