@@ -328,11 +328,55 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         postInvalidateOnAnimation()
     }
 
+    /** Level up: no message, the number itself animates (old one shrinks away, new one pops in with a glow). */
+    @Suppress("UNUSED_PARAMETER")
     fun showLevelUp(newLevel: Int, title: String, extra: String) {
-        banners.add(Banner("⭐ ¡NIVEL $newLevel! ⭐", if (extra.isEmpty()) title else "$title · $extra", true))
-        if (banners.size == 1) bannerStart = SystemClock.uptimeMillis()
-        burst()
+        levelAnimFrom = level
+        levelAnimStart = SystemClock.uptimeMillis()
+        pendingBurst = true
         postInvalidateOnAnimation()
+    }
+
+    private var levelAnimFrom = 0
+    private var levelAnimStart = 0L
+    private val levelOutMs = 260L
+    private val levelInMs = 700L
+    private var pendingBurst = false
+    private var badgeX = 0f
+    private var badgeY = 0f
+
+    /** Draws the badge with the level-change animation. Returns true while animating. */
+    private fun drawAnimatedBadge(c: Canvas, t: KbTheme, cx: Float, cy: Float, r: Float, blue: Float, pressed: Boolean, now: Long): Boolean {
+        badgeX = cx; badgeY = cy
+        val e = now - levelAnimStart
+        if (levelAnimStart == 0L || e >= levelOutMs + levelInMs) {
+            renderer.drawBadge(c, xpStyle, t, cx, cy, r, level, blue, pressed)
+            return false
+        }
+        if (e < levelOutMs) {
+            // old number shrinks and fades upward
+            val p = e.toFloat() / levelOutMs
+            val sc = 1f - 0.45f * p
+            c.save()
+            c.translate(0f, -dp(6f) * p)
+            c.scale(sc, sc, cx, cy)
+            renderer.drawBadge(c, xpStyle, t, cx, cy, r, levelAnimFrom, 1f, pressed)
+            c.restore()
+        } else {
+            if (pendingBurst) { pendingBurst = false; burst(cx, cy) }
+            val p = (e - levelOutMs).toFloat() / levelInMs
+            // golden glow ring
+            keyPaint.shader = null
+            keyPaint.color = withAlpha(Color.parseColor("#FFD54A"), (150 * (1f - p)).toInt())
+            c.drawCircle(cx, cy, r * (1.1f + 0.7f * p), keyPaint)
+            val pop = 1f + 0.4f * sin(Math.PI * min(1f, p * 1.4f)).toFloat()
+            val sc = (0.55f + 0.45f * min(1f, p * 3f)) * pop
+            c.save()
+            c.scale(sc, sc, cx, cy)
+            renderer.drawBadge(c, xpStyle, t, cx, cy, r, level, blue, pressed)
+            c.restore()
+        }
+        return true
     }
 
     fun showBanner(title: String, subtitle: String) {
@@ -452,12 +496,13 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             val br = w - padX - dp(10f)
             val cy2 = bcy + dp(5f)
             renderer.drawBar(c, xpStyle, t, bl, br, cy2, blue, level, if (animating) animTo else blue, whiteAlpha)
-            renderer.drawBadge(c, xpStyle, t, w / 2f, cy2 - dp(11f), r, level, blue, pressedRow)
-            if (animating) postInvalidateOnAnimation()
+            val lvlAnim = drawAnimatedBadge(c, t, w / 2f, cy2 - dp(11f), r, blue, pressedRow, now)
+            if (animating || lvlAnim) postInvalidateOnAnimation()
             textPaint.typeface = Typeface.DEFAULT
             return
         }
-        renderer.drawBadge(c, xpStyle, t, bcx, bcy, r, level, blue, pressedRow)
+        val lvlAnim = drawAnimatedBadge(c, t, bcx, bcy, r, blue, pressedRow, now)
+        if (lvlAnim) postInvalidateOnAnimation()
         val barL = bcx + r + dp(8f)
         val barR = w - padX - dp(5f)
         renderer.drawBar(c, xpStyle, t, barL, barR, barCy, blue, level,
@@ -695,18 +740,17 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return floats.isNotEmpty()
     }
 
-    private fun burst() {
+    private fun burst(bx: Float, by: Float) {
         particles.clear()
         particlesStart = SystemClock.uptimeMillis()
-        val w = width.toFloat()
-        repeat(70) {
+        repeat(40) {
             val hue = Random.nextFloat() * 360f
             particles.add(
                 Particle(
-                    x = w / 2f + (Random.nextFloat() - 0.5f) * w * 0.3f,
-                    y = topH * 0.6f,
-                    vx = (Random.nextFloat() - 0.5f) * dp(9f),
-                    vy = -Random.nextFloat() * dp(7f) - dp(1f),
+                    x = bx,
+                    y = by,
+                    vx = (Random.nextFloat() - 0.5f) * dp(7f),
+                    vy = -Random.nextFloat() * dp(5f) - dp(1f),
                     color = Color.HSVToColor(floatArrayOf(hue, 0.8f, 1f)),
                     size = dp(3f + Random.nextFloat() * 4f),
                     rot = Random.nextFloat() * 90f
