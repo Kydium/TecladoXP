@@ -6,6 +6,7 @@ object Codes {
     const val LETTERS = -3
     const val SYMBOLS2 = -4
     const val DELETE = -5
+    const val EMOJI = -6
     const val ENTER = -10
     const val SPACE = 32
 }
@@ -48,7 +49,8 @@ object Layouts {
     private fun bottomRow(switchLabel: String, switchCode: Int, left: Key, right: Key) = listOf(
         Key(switchLabel, switchCode, 1.5f),
         left,
-        Key("", Codes.SPACE, 5f),
+        Key("☺", Codes.EMOJI, 1f),
+        Key("", Codes.SPACE, 4f),
         right,
         Key("↵", Codes.ENTER, 1.5f)
     )

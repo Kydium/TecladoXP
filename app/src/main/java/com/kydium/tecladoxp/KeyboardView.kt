@@ -97,7 +97,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val rect = RectF()
 
     // ------------------------------------------------------------------ touch state
-    private enum class Mode { NONE, PRESS, POPUP, GLIDE, CURSOR, DELSWIPE, STRIP }
+    private enum class Mode { NONE, PRESS, POPUP, GLIDE, CURSOR, DELSWIPE, STRIP, EMOJI }
 
     private var mode = Mode.NONE
     private var activeId = -1
@@ -137,6 +137,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     // ================================================================== public API
 
     fun setLayout(type: LayoutType) {
+        emojiMode = false
         layout = when (type) {
             LayoutType.LETTERS -> letters
             LayoutType.SYMBOLS -> symbols
@@ -144,6 +145,136 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
         cancelGesture()
         invalidate()
+    }
+
+    // ------------------------------------------------------------------ emoji panel
+    var emojiMode = false
+        private set
+    private var emojiCats: List<Pair<String, List<String>>> = emptyList()   // (tab icon, emojis); 0 = recents
+    private val recents = ArrayList<String>()
+    private var emojiCat = 1
+    private var emojiScroll = 0f
+    private var emojiVel = 0f
+    private var emojiScrolled = false
+    private var lastMoveY = 0f
+    private var lastMoveT = 0L
+    private val emojiBar = listOf(
+        Key("ABC", Codes.LETTERS, 1.6f),
+        Key("", Codes.SPACE, 6.8f),
+        Key("⌫", Codes.DELETE, 1.6f)
+    )
+    private val emojiCols = 8
+    private val emojiTabH get() = dp(40f)
+    private val emojiCellH get() = dp(46f)
+    private val emojiGridTop get() = topH + padY + emojiTabH
+    private val emojiGridBottom get() = emojiBar[0].top - dp(2f)
+
+    fun showEmojis() {
+        if (emojiCats.isEmpty()) loadEmojis()
+        emojiMode = true
+        emojiCat = if (recents.isNotEmpty()) 0 else 1
+        emojiScroll = 0f
+        emojiVel = 0f
+        cancelGesture()
+        invalidate()
+    }
+
+    private fun loadEmojis() {
+        val cats = ArrayList<Pair<String, List<String>>>()
+        cats.add(Pair("🕘", recents))
+        try {
+            context.assets.open("emojis.txt").bufferedReader(Charsets.UTF_8).useLines { lines ->
+                lines.forEach { line ->
+                    val parts = line.split('\t')
+                    if (parts.size > 1) cats.add(Pair(parts[0], parts.drop(1).filter { it.isNotEmpty() }))
+                }
+            }
+        } catch (_: Exception) {
+        }
+        val saved = context.getSharedPreferences("settings", Context.MODE_PRIVATE).getString("recent_emojis", "") ?: ""
+        recents.clear()
+        recents.addAll(saved.split('\t').filter { it.isNotEmpty() })
+        emojiCats = cats
+    }
+
+    private fun addRecent(e: String) {
+        recents.remove(e)
+        recents.add(0, e)
+        while (recents.size > 32) recents.removeAt(recents.size - 1)
+        context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
+            .putString("recent_emojis", recents.joinToString("\t")).apply()
+    }
+
+    private fun emojiMaxScroll(): Float {
+        val list = emojiCats.getOrNull(emojiCat)?.second ?: return 0f
+        val rows = (list.size + emojiCols - 1) / emojiCols
+        return max(0f, rows * emojiCellH - (emojiGridBottom - emojiGridTop))
+    }
+
+    private fun emojiAt(x: Float, y: Float): String? {
+        if (y < emojiGridTop || y > emojiGridBottom) return null
+        val list = emojiCats.getOrNull(emojiCat)?.second ?: return null
+        val cellW = width / emojiCols.toFloat()
+        val col = (x / cellW).toInt().coerceIn(0, emojiCols - 1)
+        val row = ((y - emojiGridTop + emojiScroll) / emojiCellH).toInt()
+        return list.getOrNull(row * emojiCols + col)
+    }
+
+    private fun drawEmojiPanel(c: Canvas) {
+        val t = theme
+        val w = width.toFloat()
+        // tabs
+        val tabs = emojiCats.size
+        if (tabs > 0) {
+            val tw = w / tabs
+            val ty = topH + padY
+            emojiCats.forEachIndexed { i, cat ->
+                val cx = tw * i + tw / 2f
+                textPaint.typeface = Typeface.DEFAULT
+                textPaint.textSize = sp(18f)
+                textPaint.color = t.text
+                val sel = i == emojiCat
+                if (sel) {
+                    keyPaint.shader = null
+                    keyPaint.color = t.keyPressed
+                    rect.set(cx - tw / 2f + dp(2f), ty + dp(2f), cx + tw / 2f - dp(2f), ty + emojiTabH - dp(4f))
+                    c.drawRoundRect(rect, dp(10f), dp(10f), keyPaint)
+                    keyPaint.color = t.accent
+                    c.drawRect(cx - dp(10f), ty + emojiTabH - dp(4f), cx + dp(10f), ty + emojiTabH - dp(2f), keyPaint)
+                }
+                c.drawText(cat.first, cx, ty + emojiTabH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f - dp(1f), textPaint)
+            }
+        }
+        // grid
+        val list = emojiCats.getOrNull(emojiCat)?.second ?: emptyList()
+        val top = emojiGridTop
+        val bottom = emojiGridBottom
+        c.save()
+        c.clipRect(0f, top, w, bottom)
+        if (list.isEmpty()) {
+            textPaint.textSize = sp(13f)
+            textPaint.color = t.textMuted
+            c.drawText("Aquí aparecerán tus emojis recientes", w / 2f, (top + bottom) / 2f, textPaint)
+        } else {
+            val cellW = w / emojiCols
+            val firstRow = (emojiScroll / emojiCellH).toInt()
+            val lastRow = ((emojiScroll + (bottom - top)) / emojiCellH).toInt() + 1
+            textPaint.textSize = sp(26f)
+            textPaint.color = t.text
+            val off = -(textPaint.ascent() + textPaint.descent()) / 2f
+            for (r in firstRow..lastRow) for (col in 0 until emojiCols) {
+                val e = list.getOrNull(r * emojiCols + col) ?: continue
+                val cy = top + r * emojiCellH - emojiScroll + emojiCellH / 2f
+                c.drawText(e, col * cellW + cellW / 2f, cy + off, textPaint)
+            }
+        }
+        c.restore()
+        // fling
+        if (mode != Mode.EMOJI && abs(emojiVel) > 0.05f) {
+            emojiScroll = (emojiScroll + emojiVel * 16f).coerceIn(0f, emojiMaxScroll())
+            emojiVel *= 0.93f
+            postInvalidateOnAnimation()
+        }
     }
 
     fun setSuggestions(s: List<String>, bold: Int) {
@@ -203,6 +334,16 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         bgShader = null
         unitW = (w - padX * 2) / 10f
         for (l in listOf(letters, symbols, symbols2)) layoutKeys(l, w)
+        // emoji bottom bar (same height as a key row, at the bottom)
+        var x = padX
+        val barTop = h - padY - rowH * 0.9f
+        for (k in emojiBar) {
+            k.left = x
+            k.right = x + k.width * unitW
+            k.top = barTop
+            k.bottom = h - padY
+            x = k.right
+        }
     }
 
     private fun layoutKeys(l: KbLayout, w: Int) {
@@ -308,7 +449,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val radius = dp(7f)
         val pressed = if (mode == Mode.PRESS || mode == Mode.POPUP || mode == Mode.CURSOR || mode == Mode.DELSWIPE) curKey else null
         var idx = 0
-        for (row in layout.rows) for (k in row) {
+        if (emojiMode) drawEmojiPanel(c)
+        val keys = if (emojiMode) emojiBar else layout.allKeys
+        for (k in keys) {
             idx++
             val special = k.isSpecial && k.code != Codes.SPACE
             val base = if (special) t.keySpecial else t.key
@@ -588,7 +731,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         if (y < topH) return null
         var best: Key? = null
         var bd = Float.MAX_VALUE
-        for (k in layout.allKeys) {
+        for (k in (if (emojiMode) emojiBar else layout.allKeys)) {
             if (k.contains(x, y)) return k
             val d = hypot(k.cx - x, (k.cy - y) * 0.8f)
             if (d < bd) { bd = d; best = k }
@@ -691,6 +834,28 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             invalidate()
             return
         }
+        if (emojiMode && y < emojiBar[0].top) {
+            if (y < emojiGridTop) {
+                // category tab
+                val tabs = max(1, emojiCats.size)
+                val i = (x / (width / tabs.toFloat())).toInt().coerceIn(0, tabs - 1)
+                if (i != emojiCat) {
+                    emojiCat = i
+                    emojiScroll = 0f
+                    emojiVel = 0f
+                    listener.onPressFeedback()
+                }
+                mode = Mode.NONE
+                invalidate()
+                return
+            }
+            mode = Mode.EMOJI
+            emojiVel = 0f
+            emojiScrolled = false
+            lastMoveY = y
+            lastMoveT = SystemClock.uptimeMillis()
+            return
+        }
         val k = keyAt(x, y)
         if (k == null) { mode = Mode.NONE; return }
         downKey = k
@@ -766,6 +931,19 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             Mode.STRIP -> {
                 if (abs(y - downY) > topH) { stripPressed = -1; invalidate() }
             }
+            Mode.EMOJI -> {
+                if (abs(y - downY) > dp(8f)) emojiScrolled = true
+                if (emojiScrolled) {
+                    val now = SystemClock.uptimeMillis()
+                    val dy = y - lastMoveY
+                    emojiScroll = (emojiScroll - dy).coerceIn(0f, emojiMaxScroll())
+                    val dt = max(1L, now - lastMoveT)
+                    emojiVel = -dy / dt
+                    lastMoveY = y
+                    lastMoveT = now
+                    invalidate()
+                }
+            }
             Mode.NONE -> {}
         }
     }
@@ -795,6 +973,19 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     if (i == -2) listener.onBadge() else if (i >= 0) listener.onSuggestion(i)
                 }
                 stripPressed = -1
+            }
+            Mode.EMOJI -> {
+                if (!emojiScrolled) {
+                    val e = emojiAt(downX, downY)
+                    if (e != null) {
+                        listener.onPressFeedback()
+                        listener.onAltText(e)
+                        addRecent(e)
+                    }
+                    emojiVel = 0f
+                } else if (SystemClock.uptimeMillis() - lastMoveT > 80) {
+                    emojiVel = 0f
+                }
             }
             Mode.CURSOR, Mode.NONE -> {}
         }

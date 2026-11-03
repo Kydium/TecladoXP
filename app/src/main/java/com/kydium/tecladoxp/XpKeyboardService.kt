@@ -408,6 +408,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             Codes.SYMBOLS2 -> { kv?.setLayout(LayoutType.SYMBOLS2); lastCorrection = null }
             Codes.LETTERS -> { kv?.setLayout(LayoutType.LETTERS); updateShiftAuto() }
             Codes.ENTER -> handleEnter()
+            Codes.EMOJI -> { lastCorrection = null; kv?.showEmojis() }
             Codes.SPACE -> handleSpace()
             else -> handleText(String(Character.toChars(key.code)))
         }
