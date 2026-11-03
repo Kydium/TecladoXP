@@ -26,6 +26,7 @@ object XpBarStyles {
     val all = listOf(
         StyleOption("clasica", "Clásica", 1),
         StyleOption("club", "Club Campestre", 1),
+        StyleOption("bloques", "Bloques", 1),
         StyleOption("minima", "Mínima", 1),
         StyleOption("neon", "Neón", 5),
         StyleOption("pixel", "Pixel retro", 10)
@@ -102,6 +103,25 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         stroke.shader = null
         val num = level.toString()
         when (style) {
+            "bloques" -> {
+                if (pressed) {
+                    fill.color = withAlpha(Color.WHITE, 40)
+                    c.drawRect(cx - r, cy - r, cx + r, cy + r, fill)
+                }
+                text.typeface = Typeface.MONOSPACE
+                text.isFakeBoldText = true
+                text.textSize = sp(if (level >= 100) 17f else 21f)
+                // dark outline (4 offsets) + green number, like block-game HUDs
+                text.color = Color.parseColor("#1B1B1B")
+                val o = dp(1.6f)
+                drawCentered(c, num, cx - o, cy)
+                drawCentered(c, num, cx + o, cy)
+                drawCentered(c, num, cx, cy - o)
+                drawCentered(c, num, cx, cy + o)
+                text.color = Color.parseColor("#80FF20")
+                drawCentered(c, num, cx, cy)
+                text.isFakeBoldText = false
+            }
             "club" -> {
                 // glow
                 fill.color = withAlpha(clubBlue, 50)
@@ -217,6 +237,28 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         fill.shader = null
         val f = frac.coerceIn(0f, 1f)
         when (style) {
+            "bloques" -> {
+                val h = dp(6.5f)
+                val top = cy - h / 2f
+                fill.color = Color.parseColor("#0E0E0E")
+                c.drawRect(left - dp(1.2f), top - dp(1.2f), right + dp(1.2f), top + h + dp(1.2f), fill)
+                fill.color = Color.parseColor("#3A3A3A")
+                c.drawRect(left, top, right, top + h, fill)
+                val fr = left + (right - left) * f
+                if (fr > left) {
+                    fill.color = Color.parseColor("#3CA516")
+                    c.drawRect(left, top, fr, top + h, fill)
+                    fill.color = Color.parseColor("#80FF20")
+                    c.drawRect(left, top, fr, top + h * 0.55f, fill)
+                }
+                // notches
+                fill.color = Color.parseColor("#0E0E0E")
+                val seg = (right - left) / 18f
+                for (i in 1..17) {
+                    val x = left + seg * i
+                    c.drawRect(x - dp(0.8f), top + h * 0.45f, x + dp(0.8f), top + h, fill)
+                }
+            }
             "club" -> {
                 val nr = dp(8.5f)
                 val barR = right - nr * 2 - dp(2f)

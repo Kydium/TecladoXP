@@ -491,6 +491,7 @@ class MainActivity : Activity() {
         switchRow(c, "Doble espacio = punto", "", "doublespace", true)
         switchRow(c, "Números en las teclas", "Mantén presionada la fila de arriba", "hints", true)
         switchRow(c, "Mostrar +XP flotante", "", "floatxp", true)
+        switchRow(c, "Sonidos de XP", "Un \"pling\" al ganar XP y una melodía al subir de nivel", "xpsound", true)
 
         c.addView(text("Altura del teclado", 15f, textC).apply { setPadding(0, dpi(12f), 0, dpi(8f)) })
         val h = settings.getInt("height", 1)

@@ -28,6 +28,8 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private lateinit var worker: Handler
     private var workerThread: HandlerThread? = null
     private var vibrator: Vibrator? = null
+    private var sounds: SoundFx? = null
+    private var soundOn = true
 
     private val composing = StringBuilder()
 
@@ -86,6 +88,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     override fun onDestroy() {
         dict.saveAsync()
+        sounds?.release()
         workerThread?.quitSafely()
         super.onDestroy()
     }
@@ -113,6 +116,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         v.showHints = settings.getBoolean("hints", true)
         v.showFloatingXp = settings.getBoolean("floatxp", true)
         vibrateOn = settings.getBoolean("vibrate", true)
+        soundOn = settings.getBoolean("xpsound", true)
         doubleSpaceOn = settings.getBoolean("doublespace", true)
         autoCorrectSetting = settings.getBoolean("autocorrect", true)
         glideSetting = settings.getBoolean("glide", true)
@@ -335,6 +339,10 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val r = XpManager.onWord(letters, kind)
         val v = kv ?: return
         v.addFloatingXp(r.gained)
+        if (soundOn) {
+            val sfx = sounds ?: SoundFx(this).also { sounds = it }
+            if (r.leveledUp) sfx.playLevelUp() else sfx.playOrb()
+        }
         if (r.leveledUp) {
             val range = (before + 1)..r.level
             val unlocks = ArrayList<String>()
