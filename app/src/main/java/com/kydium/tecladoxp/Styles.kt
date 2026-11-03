@@ -114,6 +114,48 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         text.typeface = Typeface.DEFAULT
     }
 
+    // 5x7 pixel font for digits
+    private val PIXEL_DIGITS = arrayOf(
+        arrayOf(".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
+        arrayOf("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+        arrayOf(".###.", "#...#", "....#", "..##.", ".#...", "#....", "#####"),
+        arrayOf(".###.", "#...#", "....#", "..##.", "....#", "#...#", ".###."),
+        arrayOf("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
+        arrayOf("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
+        arrayOf("..##.", ".#...", "#....", "####.", "#...#", "#...#", ".###."),
+        arrayOf("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
+        arrayOf(".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+        arrayOf(".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##..")
+    )
+
+    /** Draws digits as square pixels ([px] = size of one pixel) with a 1-pixel outline, centered on (cx, cy). */
+    fun drawPixelText(c: Canvas, s: String, cx: Float, cy: Float, px: Float, color: Int, outline: Int) {
+        val glyphs = s.filter { it.isDigit() }
+        if (glyphs.isEmpty()) return
+        val w = glyphs.length * 5 * px + (glyphs.length - 1) * px
+        val h = 7 * px
+        val x0 = Math.round(cx - w / 2f).toFloat()
+        val y0 = Math.round(cy - h / 2f).toFloat()
+        fill.shader = null
+        val aa = fill.isAntiAlias
+        fill.isAntiAlias = false
+        for (pass in 0..1) {
+            fill.color = if (pass == 0) outline else color
+            glyphs.forEachIndexed { gi, ch ->
+                val g = PIXEL_DIGITS[ch - '0']
+                val gx = x0 + gi * 6 * px
+                for (row in 0 until 7) for (col in 0 until 5) {
+                    if (g[row][col] != '#') continue
+                    val x = gx + col * px
+                    val y = y0 + row * px
+                    if (pass == 0) c.drawRect(x - px, y - px, x + 2 * px, y + 2 * px, fill)
+                    else c.drawRect(x, y, x + px, y + px, fill)
+                }
+            }
+        }
+        fill.isAntiAlias = aa
+    }
+
     // ================================================================ badge
 
     fun drawBadge(c: Canvas, style: String, t: KbTheme, cx: Float, cy: Float, r: Float, level: Int, frac: Float, pressed: Boolean) {
@@ -126,19 +168,9 @@ class StyleRenderer(private val dm: DisplayMetrics) {
                     fill.color = withAlpha(Color.WHITE, 40)
                     c.drawRect(cx - r, cy - r, cx + r, cy + r, fill)
                 }
-                text.typeface = Typeface.MONOSPACE
-                text.isFakeBoldText = true
-                text.textSize = sp(if (level >= 100) 16f else 19f)
-                // dark outline (4 offsets) + green number, like block-game HUDs
-                text.color = Color.parseColor("#1B1B1B")
-                val o = dp(1.3f)
-                drawCentered(c, num, cx - o, cy)
-                drawCentered(c, num, cx + o, cy)
-                drawCentered(c, num, cx, cy - o)
-                drawCentered(c, num, cx, cy + o)
-                text.color = Color.parseColor("#80FF20")
-                drawCentered(c, num, cx, cy)
-                text.isFakeBoldText = false
+                // pixel-art digits, green with a dark outline (block-game style)
+                val px = r * (if (num.length >= 3) 0.13f else 0.17f)
+                drawPixelText(c, num, cx, cy, px, Color.parseColor("#80FF20"), Color.parseColor("#141414"))
             }
             "club" -> rpCircle(c, cx, cy, r, num, pressed)
             "pixel" -> {
