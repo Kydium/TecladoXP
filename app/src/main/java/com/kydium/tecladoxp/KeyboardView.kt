@@ -339,8 +339,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private var levelAnimFrom = 0
     private var levelAnimStart = 0L
-    private val levelOutMs = 260L
-    private val levelInMs = 700L
+    private val levelOutMs = 150L
+    private val levelInMs = 420L
     private var pendingBurst = false
     private var badgeX = 0f
     private var badgeY = 0f
