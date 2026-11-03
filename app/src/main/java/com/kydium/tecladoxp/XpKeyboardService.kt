@@ -610,28 +610,76 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         selEnd = pos
     }
 
-    override fun onGlide(px: FloatArray, py: FloatArray, n: Int) {
+    // ---- glide (swipe) typing: live preview while the finger moves, final word on release
+    private var glidePrepared = false
+    private var glideSeq = 0
+
+    /** Commit whatever was being typed and put a space before the new glided word. */
+    private fun prepareGlide() {
         val ic = ic() ?: return
-        val v = kv ?: return
-        if (!dict.loaded) return
         lastCorrection = null
         if (composing.isNotEmpty()) commitWord(!lastWordWasGlide)
         val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
         if (before.isNotEmpty() && !before[0].isWhitespace() && before[0] !in "¿¡(\"'«“@#/") ic.commitText(" ", 1)
+        glidePrepared = true
+    }
 
-        val res = dict.glide(px, py, n, v.letterCenters(), v.unitW, v.keyRowH, prevWord)
-        if (res.isEmpty()) {
-            refreshSuggestions()
-            return
-        }
+    override fun onGlideStart() {
+        if (!dict.loaded) return
+        prepareGlide()
+    }
+
+    private fun showGlideWord(res: List<String>, final: Boolean) {
+        val ic = ic() ?: return
+        val v = kv ?: return
         val cased = res.map { applyShiftToWord(it) }
+        composing.setLength(0)
         composing.append(cased[0])
         ic.setComposingText(composing, 1)
         lastWordWasGlide = true
         autoSpace = false
-        if (v.shiftState == 1) v.shiftState = 0
         slots = listOf(cased.getOrElse(1) { "" }, cased[0], cased.getOrElse(2) { "" })
         v.setSuggestions(slots, 1)
+        if (final) {
+            if (v.shiftState == 1) v.shiftState = 0
+        } else {
+            v.setGlidePreview(cased[0])
+        }
+    }
+
+    override fun onGlideProgress(px: FloatArray, py: FloatArray, n: Int) {
+        val v = kv ?: return
+        if (!dict.loaded || !glidePrepared) return
+        val seq = ++glideSeq
+        val centers = v.letterCenters()
+        val kw = v.unitW
+        val kh = v.keyRowH
+        val prev = prevWord
+        worker.removeCallbacksAndMessages(null)
+        worker.post {
+            val res = try { dict.glide(px, py, n, centers, kw, kh, prev) } catch (_: Exception) { emptyList() }
+            main.post {
+                if (seq == glideSeq && glidePrepared && res.isNotEmpty()) showGlideWord(res, false)
+            }
+        }
+    }
+
+    override fun onGlide(px: FloatArray, py: FloatArray, n: Int) {
+        val v = kv ?: return
+        if (!dict.loaded) return
+        glideSeq++                       // drop pending live results
+        worker.removeCallbacksAndMessages(null)
+        if (!glidePrepared) prepareGlide()
+        glidePrepared = false
+        val res = dict.glide(px, py, n, v.letterCenters(), v.unitW, v.keyRowH, prevWord)
+        if (res.isEmpty()) {
+            // keep the live preview if there was one
+            if (composing.isNotEmpty() && lastWordWasGlide) {
+                kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
+            } else refreshSuggestions()
+            return
+        }
+        showGlideWord(res, true)
     }
 
     override fun onSuggestion(index: Int) {

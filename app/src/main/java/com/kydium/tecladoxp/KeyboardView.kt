@@ -27,6 +27,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         fun onKey(key: Key)
         fun onAltText(text: String)
         fun onGlide(px: FloatArray, py: FloatArray, n: Int)
+        fun onGlideStart()
+        fun onGlideProgress(px: FloatArray, py: FloatArray, n: Int)
         fun onCursor(delta: Int)
         fun onDeleteRepeat()
         fun onDeleteWords(count: Int)
@@ -128,6 +130,14 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var gy = FloatArray(1024)
     private var gCount = 0
     private var trailFadeStart = 0L
+    private var lastGlideProgress = 0L
+    private var glidePreview = ""
+
+    /** Word currently recognized while the finger is still gliding (shown in a bubble). */
+    fun setGlidePreview(word: String) {
+        glidePreview = word
+        invalidate()
+    }
 
     // ------------------------------------------------------------------ animations
     private class FloatText(val text: String, val x: Float, val y: Float, val start: Long, val color: Int)
@@ -394,6 +404,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val trailAnim = drawTrail(canvas, now)
         drawPreview(canvas)
         drawPopup(canvas)
+        drawGlideBubble(canvas)
         val animating = drawFloats(canvas, now) or drawParticles(canvas, now) or drawBanner(canvas, now)
         if (animating || trailAnim) postInvalidateOnAnimation()
     }
@@ -614,6 +625,33 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         textPaint.color = t.text
         val label = if (k.isLetter && shiftState > 0) k.label.uppercase() else k.label
         c.drawText(label, rect.centerX(), rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+    }
+
+    private fun drawGlideBubble(c: Canvas) {
+        if (mode != Mode.GLIDE || glidePreview.isEmpty() || gCount < 1) return
+        val t = theme
+        textPaint.typeface = Typeface.DEFAULT_BOLD
+        textPaint.textSize = sp(17f)
+        val tw = textPaint.measureText(glidePreview)
+        val bw = tw + dp(24f)
+        val bh = dp(34f)
+        val fx = gx[gCount - 1]
+        val fy = gy[gCount - 1]
+        var left = (fx - bw / 2f).coerceIn(dp(4f), width - bw - dp(4f))
+        var top = fy - dp(70f) - bh / 2f
+        if (top < dp(2f)) top = dp(2f)
+        rect.set(left, top, left + bw, top + bh)
+        keyPaint.shader = null
+        keyPaint.color = withAlpha(Color.BLACK, 90)
+        rect.offset(0f, dp(2f))
+        c.drawRoundRect(rect, bh / 2f, bh / 2f, keyPaint)
+        rect.offset(0f, -dp(2f))
+        keyPaint.color = t.accent
+        c.drawRoundRect(rect, bh / 2f, bh / 2f, keyPaint)
+        textPaint.color = Color.WHITE
+        c.drawText(glidePreview, rect.centerX(), rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        textPaint.typeface = Typeface.DEFAULT
+        left += 0f
     }
 
     private fun drawPopup(c: Canvas) {
@@ -874,6 +912,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 activeId = -1
             }
             MotionEvent.ACTION_CANCEL -> {
+                if (mode == Mode.GLIDE && gCount > 1) listener.onGlide(gx.copyOf(gCount), gy.copyOf(gCount), gCount)
+                glidePreview = ""
                 cancelGesture()
                 gCount = 0
                 invalidate()
@@ -962,6 +1002,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 } else if (glideEnabled && layout === letters && k.isLetter && hypot(dx, dy) > unitW * 0.55f) {
                     removeCallbacks(longPress)
                     mode = Mode.GLIDE
+                    glidePreview = ""
+                    lastGlideProgress = SystemClock.uptimeMillis()
+                    listener.onGlideStart()
                 } else if (!k.isSpecial) {
                     val nk = keyAt(x, y)
                     if (nk != null && !nk.isSpecial && nk !== curKey) {
@@ -980,6 +1023,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             }
             Mode.GLIDE -> {
                 addGlide(x, y)
+                val now = SystemClock.uptimeMillis()
+                if (now - lastGlideProgress >= 60) {
+                    lastGlideProgress = now
+                    listener.onGlideProgress(gx.copyOf(gCount), gy.copyOf(gCount), gCount)
+                }
                 invalidate()
             }
             Mode.CURSOR -> {
@@ -1032,6 +1080,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 addGlide(x, y)
                 listener.onGlide(gx.copyOf(gCount), gy.copyOf(gCount), gCount)
                 trailFadeStart = SystemClock.uptimeMillis()
+                glidePreview = ""
             }
             Mode.DELSWIPE -> if (delSteps > 0) listener.onDeleteWords(delSteps)
             Mode.STRIP -> {

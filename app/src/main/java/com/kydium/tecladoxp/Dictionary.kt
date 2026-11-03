@@ -5,6 +5,7 @@ import java.io.InputStream
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.min
 
 class Suggestions(
@@ -370,6 +371,8 @@ class Dictionary(private val userDir: File?) {
             cx.entries.map { Pair(it.key, hypot(it.value[0] - x, it.value[1] - y)) }
                 .filter { it.second < 1.15f }.sortedBy { it.second }.take(3)
 
+        var userLen = 0f
+        for (i in 1 until N) userLen += hypot(ux[i] - ux[i - 1], uy[i] - uy[i - 1])
         val starts = nearest(ux[0], uy[0])
         val ends = nearest(ux[N - 1], uy[N - 1])
         val scores = HashMap<String, Float>()
@@ -378,7 +381,10 @@ class Dictionary(private val userDir: File?) {
             if (!passes(gp, cx)) return
             val loc = shapeDist(gp, cx)
             if (loc > 1.0f) return
-            val s = freq * 0.55f - loc * 6.5f - (sd + ed) * 1.2f + bigramBoost(prev, display)
+            val miss = keyMiss(gp, cx)
+            // ideal path much longer than what the finger drew = extra detours the user didn't make
+            val lenRatio = if (userLen > 0.3f) max(0f, idealLen(gp, cx) / userLen - 1.1f) else 0f
+            val s = freq * 0.55f - loc * 6.5f - miss * 3f - min(lenRatio, 1.5f) * 6f - (sd + ed) * 1.2f + bigramBoost(prev, display)
             val old = scores[display]
             if (old == null || s > old) scores[display] = s
         }
@@ -398,6 +404,31 @@ class Dictionary(private val userDir: File?) {
         return scores.entries.sortedByDescending { it.value }.take(4).map { it.key }
     }
 
+    private fun idealLen(gp: String, cx: Map<Char, FloatArray>): Float {
+        var l = 0f
+        for (i in 1 until gp.length) {
+            val a = cx[gp[i - 1]] ?: continue
+            val b = cx[gp[i]] ?: continue
+            l += hypot(a[0] - b[0], a[1] - b[1])
+        }
+        return l
+    }
+
+    /** How far the path stays from keys the word needs (letters the finger never really reached). */
+    private fun keyMiss(gp: String, cx: Map<Char, FloatArray>): Float {
+        var total = 0f
+        for (ch in gp) {
+            val k = cx[ch] ?: continue
+            var best = Float.MAX_VALUE
+            for (j in 0 until N) {
+                val d = hypot(ux[j] - k[0], uy[j] - k[1])
+                if (d < best) best = d
+            }
+            if (best > 0.35f) total += best - 0.35f
+        }
+        return total
+    }
+
     /** Every letter's key must be near the path, in order. */
     private fun passes(gp: String, cx: Map<Char, FloatArray>): Boolean {
         var j = 0
@@ -405,7 +436,7 @@ class Dictionary(private val userDir: File?) {
             val k = cx[ch] ?: return false
             var found = false
             while (j < N) {
-                if (hypot(ux[j] - k[0], uy[j] - k[1]) < 0.95f) { found = true; break }
+                if (hypot(ux[j] - k[0], uy[j] - k[1]) < 1.05f) { found = true; break }
                 j++
             }
             if (!found) return false
