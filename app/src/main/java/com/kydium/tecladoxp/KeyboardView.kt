@@ -434,7 +434,19 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val blue = currentBlue(now)
         val animating = animTo > blue + 0.0001f
         val whiteAlpha = (255 * min(1f, (now - animStart).toFloat() / 120f)).toInt()
-        renderer.drawBadge(c, xpStyle, t, bcx, bcy, r, level, blue, stripPressed == -2 && mode == Mode.STRIP)
+        val pressedRow = stripPressed == -2 && mode == Mode.STRIP
+        if (xpStyle == "bloques") {
+            // block-game layout: full-width bar with the level number centered on top of it
+            val bl = padX + dp(10f)
+            val br = w - padX - dp(10f)
+            val cy2 = bcy + dp(5f)
+            renderer.drawBar(c, xpStyle, t, bl, br, cy2, blue, level, if (animating) animTo else blue, whiteAlpha)
+            renderer.drawBadge(c, xpStyle, t, w / 2f, cy2 - dp(11f), r, level, blue, pressedRow)
+            if (animating) postInvalidateOnAnimation()
+            textPaint.typeface = Typeface.DEFAULT
+            return
+        }
+        renderer.drawBadge(c, xpStyle, t, bcx, bcy, r, level, blue, pressedRow)
         val barL = bcx + r + dp(8f)
         val barR = w - padX - dp(5f)
         renderer.drawBar(c, xpStyle, t, barL, barR, barCy, blue, level,

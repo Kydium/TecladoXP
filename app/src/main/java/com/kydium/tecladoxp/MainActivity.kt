@@ -785,8 +785,13 @@ class MainActivity : Activity() {
         override fun drawContent(c: Canvas, w: Float, h: Float) {
             val cy = h * 0.34f
             val lvl = XpManager.level()
-            renderer.drawBadge(c, o.id, t, dp(22f), cy, dp(13f), lvl, 0.65f, false)
-            renderer.drawBar(c, o.id, t, dp(40f), w - dp(6f), cy, 0.65f, lvl)
+            if (o.id == "bloques") {
+                renderer.drawBar(c, o.id, t, dp(10f), w - dp(10f), cy + dp(6f), 0.65f, lvl)
+                renderer.drawBadge(c, o.id, t, w / 2f, cy - dp(5f), dp(13f), lvl, 0.65f, false)
+            } else {
+                renderer.drawBadge(c, o.id, t, dp(22f), cy, dp(13f), lvl, 0.65f, false)
+                renderer.drawBar(c, o.id, t, dp(40f), w - dp(6f), cy, 0.65f, lvl)
+            }
         }
     }
 
