@@ -363,7 +363,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             renderer.drawBadge(c, xpStyle, t, cx, cy, r, levelAnimFrom, 1f, pressed)
             c.restore()
         } else {
-            if (pendingBurst) { pendingBurst = false; burst(cx, cy) }
+            pendingBurst = false
             val p = (e - levelOutMs).toFloat() / levelInMs
             // golden glow ring
             keyPaint.shader = null
