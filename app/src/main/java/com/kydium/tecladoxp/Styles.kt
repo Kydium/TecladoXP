@@ -293,35 +293,50 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         val f = frac.coerceIn(0f, 1f)
         when (style) {
             "bloques" -> {
-                // pixel-art bar: every pixel is a square block, 5 rows tall with shading
-                val px = dp(2.2f)
-                val cols = ((right - left) / px).toInt()
-                val x0 = Math.round(left + ((right - left) - cols * px) / 2f).toFloat()
-                val top = Math.round(cy - 2.5f * px).toFloat()
+                // pixel-art bar: square blocks, 4 rows of shading, rounded (stair-step) corners
+                val px = dp(1.8f)
+                val rows = 4
+                val cols = ((right - left) / px).toInt() - 2
+                val gw = cols + 2
+                val gh = rows + 2
+                val x0 = Math.round(left + ((right - left) - gw * px) / 2f).toFloat()
+                val top = Math.round(cy - gh * px / 2f).toFloat()
                 val aa = fill.isAntiAlias
                 fill.isAntiAlias = false
-                fill.color = Color.parseColor("#0A0A0A")
-                c.drawRect(x0 - px, top - px, x0 + (cols + 1) * px, top + 6 * px, fill)
-                val full = intArrayOf(0xFFC6FF7A.toInt(), 0xFF80FF20.toInt(), 0xFF6EE01A.toInt(), 0xFF4FA414.toInt(), 0xFF2F6B0B.toInt())
-                val fullSep = intArrayOf(0xFF5FB61A.toInt(), 0xFF3F8A10.toInt(), 0xFF3F8A10.toInt(), 0xFF2F6B0B.toInt(), 0xFF1F4A07.toInt())
-                val empty = intArrayOf(0xFF4E5A44.toInt(), 0xFF2E3828.toInt(), 0xFF2A3324.toInt(), 0xFF1E261A.toInt(), 0xFF141A11.toInt())
-                val emptySep = intArrayOf(0xFF161C12.toInt(), 0xFF0E120B.toInt(), 0xFF0E120B.toInt(), 0xFF0A0D08.toInt(), 0xFF070906.toInt())
-                val white = intArrayOf(0xFFFFFFFF.toInt(), 0xFFF2FFE6.toInt(), 0xFFE6FFD2.toInt(), 0xFFCCF0B0.toInt(), 0xFFA8D48A.toInt())
+                val full = intArrayOf(0xFFC6FF7A.toInt(), 0xFF80FF20.toInt(), 0xFF5DB31A.toInt(), 0xFF2F6B0B.toInt())
+                val fullSep = intArrayOf(0xFF5FB61A.toInt(), 0xFF3F8A10.toInt(), 0xFF2F6B0B.toInt(), 0xFF1F4A07.toInt())
+                val empty = intArrayOf(0xFF4E5A44.toInt(), 0xFF2E3828.toInt(), 0xFF222A1D.toInt(), 0xFF141A11.toInt())
+                val emptySep = intArrayOf(0xFF161C12.toInt(), 0xFF0E120B.toInt(), 0xFF0A0D08.toInt(), 0xFF070906.toInt())
+                val white = intArrayOf(0xFFFFFFFF.toInt(), 0xFFEFFFE0.toInt(), 0xFFD8F7C0.toInt(), 0xFFA8D48A.toInt())
                 val filledCols = (cols * f).toInt()
                 val whiteCols = (cols * whiteTo.coerceIn(f, 1f)).toInt()
                 val cellW = cols / 18f
-                for (i in 0 until cols) {
-                    val sep = i > 0 && (i / cellW).toInt() != ((i - 1) / cellW).toInt()
-                    val pal = when {
-                        i < filledCols -> if (sep) fullSep else full
-                        i < whiteCols -> if (whiteAlpha >= 128) white else if (sep) emptySep else empty
-                        else -> if (sep) emptySep else empty
+                // corner radius in pixels (cuts a stair-step)
+                fun inShape(gx: Int, gy: Int): Boolean {
+                    if (gx < 0 || gy < 0 || gx >= gw || gy >= gh) return false
+                    val dx = min(gx, gw - 1 - gx)
+                    val dy = min(gy, gh - 1 - gy)
+                    return dx + dy >= 2
+                }
+                for (gy in 0 until gh) for (gx in 0 until gw) {
+                    if (!inShape(gx, gy)) continue
+                    val interior = inShape(gx - 1, gy) && inShape(gx + 1, gy) && inShape(gx, gy - 1) && inShape(gx, gy + 1)
+                    fill.color = if (!interior) {
+                        Color.parseColor("#0A0A0A")
+                    } else {
+                        val i = gx - 1
+                        val row = (gy - 1).coerceIn(0, rows - 1)
+                        val sep = i > 0 && (i / cellW).toInt() != ((i - 1) / cellW).toInt()
+                        val pal = when {
+                            i < filledCols -> if (sep) fullSep else full
+                            i < whiteCols && whiteAlpha >= 128 -> white
+                            else -> if (sep) emptySep else empty
+                        }
+                        pal[row]
                     }
-                    val x = x0 + i * px
-                    for (row in 0 until 5) {
-                        fill.color = pal[row]
-                        c.drawRect(x, top + row * px, x + px, top + (row + 1) * px, fill)
-                    }
+                    val x = x0 + gx * px
+                    val y = top + gy * px
+                    c.drawRect(x, y, x + px, y + px, fill)
                 }
                 fill.isAntiAlias = aa
             }
