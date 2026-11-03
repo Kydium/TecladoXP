@@ -149,6 +149,7 @@ class MainActivity : Activity() {
         renderStylePicker(lvl, "Estela al deslizar", "El rastro que deja tu dedo al escribir deslizando.",
             TrailStyles.all, "trailstyle") { o, unlocked, selected -> TrailSwatch(this, o, unlocked, selected) }
         renderSettings()
+        renderMyWords()
         renderTest()
     }
 
@@ -614,6 +615,91 @@ class MainActivity : Activity() {
         c.addView(reset, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dpi(16f)
         })
+        root.addView(c)
+    }
+
+    private var showAllWords = false
+
+    private fun renderMyWords() {
+        val dict = Dictionary.get(filesDir)
+        dict.ensureUser()
+        val words = dict.myWords()
+        val c = card()
+        sectionTitle(c, "Mis palabras  (${words.size})")
+        c.addView(text(
+            "El teclado aprende tu forma de escribir: las palabras que usas seguido suben en las sugerencias " +
+                "y al deslizar. Si te corrige una palabra tuya, toca ⌫ justo después y la aprende. También puedes agregarlas aquí.",
+            12.5f, muted
+        ).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val input = EditText(this).apply {
+            hint = "Ej: porfa"
+            setHintTextColor(muted)
+            setTextColor(textC)
+            textSize = 15f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            background = rounded(cardBg2, 12f)
+            setPadding(dpi(12f), dpi(10f), dpi(12f), dpi(10f))
+        }
+        row.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val add = button("Agregar", true) {
+            val w = input.text.toString()
+            if (dict.addWord(w)) {
+                Toast.makeText(this, "\"${w.trim()}\" agregada ✅", Toast.LENGTH_SHORT).show()
+                render()
+            } else {
+                Toast.makeText(this, "Escribe una sola palabra, solo letras", Toast.LENGTH_SHORT).show()
+            }
+        }
+        row.addView(add, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dpi(8f)
+        })
+        c.addView(row)
+
+        val shown = if (showAllWords) words else words.take(30)
+        var line: LinearLayout? = null
+        shown.forEachIndexed { i, w ->
+            if (i % 3 == 0) {
+                line = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, dpi(8f), 0, 0)
+                }
+                c.addView(line)
+            }
+            val chip = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = rounded(cardBg2, 12f)
+                setPadding(dpi(10f), dpi(6f), dpi(6f), dpi(6f))
+            }
+            chip.addView(text(w, 14f, textC), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            chip.addView(text("✕", 13f, muted).apply {
+                setPadding(dpi(8f), 0, dpi(4f), 0)
+                setOnClickListener {
+                    dict.removeWord(w)
+                    render()
+                }
+            })
+            line?.addView(chip, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dpi(3f); rightMargin = dpi(3f)
+            })
+        }
+        val rest = shown.size % 3
+        if (rest != 0) repeat(3 - rest) {
+            line?.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f).apply { leftMargin = dpi(3f); rightMargin = dpi(3f) })
+        }
+        if (words.size > 30) {
+            c.addView(button(if (showAllWords) "Ver menos" else "Ver todas (${words.size})", false) {
+                showAllWords = !showAllWords
+                render()
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dpi(10f)
+            })
+        }
         root.addView(c)
     }
 

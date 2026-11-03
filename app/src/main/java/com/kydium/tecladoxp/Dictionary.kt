@@ -37,7 +37,9 @@ class Dictionary(private val userDir: File?) {
     private var byLen: HashMap<Int, IntArray> = HashMap()
     private var glideBuckets: HashMap<Int, IntArray> = HashMap()
 
+    /** Every word you commit, with how many times (dictionary words too: it's your personal ranking). */
     private val userWords = HashMap<String, Int>()
+    private var userLoaded = false
     private val bigrams = HashMap<String, HashMap<String, Int>>()
     @Volatile private var dirty = false
 
@@ -88,13 +90,27 @@ class Dictionary(private val userDir: File?) {
         words = wa; norms = na; gpaths = ga; freqs = fa; exact = ex; sortedIdx = sorted
         byLen = HashMap(lenMap.mapValues { it.value.toIntArray() })
         glideBuckets = HashMap(gMap.mapValues { it.value.toIntArray() })
-        loadUser()
+        if (!userLoaded) loadUser()
         loaded = true
     }
 
     // ---------------------------------------------------------------- normalization
 
     companion object {
+        @Volatile private var shared: Dictionary? = null
+
+        /** One dictionary per app process, shared by the keyboard and the settings screen. */
+        fun get(dir: File): Dictionary = shared ?: synchronized(this) {
+            shared ?: Dictionary(dir).also { shared = it }
+        }
+
+        /** Not offered as a suggestion unless you've used it yourself (still accepted when typed). */
+        private val OFFENSIVE = setOf(
+            "puta", "puto", "putas", "putos", "mierda", "verga", "vergas", "pendejo", "pendeja", "cojudo", "cojuda",
+            "concha", "carajo", "chucha", "culo", "culos", "coño", "joder", "polla", "huevón", "cabrón", "maricón",
+            "marica", "zorra", "perra", "pinga", "mamón", "chingar", "chingada", "follar", "cagar", "cagada"
+        )
+
         fun norm(s: String): String {
             val sb = StringBuilder(s.length)
             for (ch in s.lowercase()) sb.append(
@@ -144,6 +160,17 @@ class Dictionary(private val userDir: File?) {
     // ---------------------------------------------------------------- validity
 
     @Synchronized
+    /** Personal ranking bonus: words you use a lot float to the top. */
+    private fun blocked(w: String): Boolean {
+        val lw = w.lowercase()
+        return OFFENSIVE.contains(lw) && (userWords[lw] ?: 0) < 2
+    }
+
+    private fun userBoost(w: String): Float {
+        val c = userWords[w.lowercase()] ?: return 0f
+        return 0.6f * ln(1f + c)
+    }
+
     fun isValid(word: String): Boolean {
         val lw = word.lowercase()
         return exact.containsKey(lw) || (userWords[lw] ?: 0) >= 2
@@ -218,6 +245,7 @@ class Dictionary(private val userDir: File?) {
         val corrFreq = HashMap<String, Int>()
 
         fun put(map: HashMap<String, Float>, w: String, s: Float) {
+            if (blocked(w)) return
             val old = map[w]
             if (old == null || s > old) map[w] = s
         }
@@ -229,7 +257,7 @@ class Dictionary(private val userDir: File?) {
             val idx = sortedIdx[k]
             val extra = norms[idx].length - nt.length
             if (extra <= 0) continue
-            put(comp, words[idx], freqs[idx] / 100f - 0.35f * extra - 0.8f + bigramBoost(prev, words[idx]))
+            put(comp, words[idx], freqs[idx] / 100f - 0.35f * extra - 0.8f + bigramBoost(prev, words[idx]) + userBoost(words[idx]))
         }
 
         // corrections
@@ -248,7 +276,7 @@ class Dictionary(private val userDir: File?) {
                     val d = dist(nt, norms[idx], maxD)
                     if (d <= maxD) {
                         val s = freqs[idx] / 100f - d * 2.4f + (if (d == 0f) 1.5f else 0f) +
-                            bigramBoost(prev, words[idx])
+                            bigramBoost(prev, words[idx]) + userBoost(words[idx])
                         put(corr, words[idx], s)
                         val od = corrDist[words[idx]]
                         if (od == null || d < od) corrDist[words[idx]] = d
@@ -378,13 +406,14 @@ class Dictionary(private val userDir: File?) {
         val scores = HashMap<String, Float>()
 
         fun consider(gp: String, display: String, freq: Float, sd: Float, ed: Float) {
-            if (!passes(gp, cx)) return
+            if (blocked(display) || !passes(gp, cx)) return
             val loc = shapeDist(gp, cx)
             if (loc > 1.0f) return
             val miss = keyMiss(gp, cx)
             // ideal path much longer than what the finger drew = extra detours the user didn't make
             val lenRatio = if (userLen > 0.3f) max(0f, idealLen(gp, cx) / userLen - 1.1f) else 0f
-            val s = freq * 0.55f - loc * 6.5f - miss * 3f - min(lenRatio, 1.5f) * 6f - (sd + ed) * 1.2f + bigramBoost(prev, display)
+            val s = freq * 0.55f - loc * 6.5f - miss * 3f - min(lenRatio, 1.5f) * 6f - (sd + ed) * 1.2f +
+                bigramBoost(prev, display) + userBoost(display)
             val old = scores[display]
             if (old == null || s > old) scores[display] = s
         }
@@ -461,16 +490,21 @@ class Dictionary(private val userDir: File?) {
     @Synchronized
     fun learnWord(word: String) {
         val lw = word.lowercase()
-        if (lw.length < 2 || exact.containsKey(lw) || !lw.all { it.isLetter() }) return
+        if (lw.isEmpty() || !lw.all { it.isLetter() }) return
+        if (lw.length < 2 && !exact.containsKey(lw)) return
         userWords[lw] = (userWords[lw] ?: 0) + 1
+        if (userWords.size > 8000) {
+            // forget the words used only once
+            val it = userWords.entries.iterator()
+            while (it.hasNext() && userWords.size > 6000) if (it.next().value <= 1) it.remove()
+        }
         dirty = true
     }
 
-    /** User explicitly kept this word (undid an autocorrection / tapped it). */
     @Synchronized
     fun forceLearn(word: String) {
         val lw = word.lowercase()
-        if (lw.length < 2 || exact.containsKey(lw) || !lw.all { it.isLetter() }) return
+        if (lw.length < 2 || !lw.all { it.isLetter() }) return
         userWords[lw] = maxOf(2, (userWords[lw] ?: 0) + 1)
         dirty = true
     }
@@ -494,6 +528,7 @@ class Dictionary(private val userDir: File?) {
     }
 
     private fun loadUser() {
+        userLoaded = true
         val dir = userDir ?: return
         try {
             val uf = File(dir, "user_words.txt")
@@ -530,6 +565,34 @@ class Dictionary(private val userDir: File?) {
     }
 
     @Synchronized
+    fun ensureUser() {
+        if (!userLoaded) loadUser()
+    }
+
+    /** Words you taught it that are not in the dictionary. */
+    @Synchronized
+    fun myWords(): List<String> =
+        userWords.entries.filter { it.value >= 2 && !exact.containsKey(it.key) }
+            .sortedByDescending { it.value }.map { it.key }
+
+    @Synchronized
+    fun addWord(word: String): Boolean {
+        val lw = word.trim().lowercase()
+        if (lw.length < 2 || !lw.all { it.isLetter() }) return false
+        userWords[lw] = maxOf(6, userWords[lw] ?: 0)
+        dirty = true
+        saveAsync()
+        return true
+    }
+
+    @Synchronized
+    fun removeWord(word: String) {
+        userWords.remove(word.lowercase())
+        dirty = true
+        saveAsync()
+    }
+
+    @Synchronized
     fun clearLearning() {
         userWords.clear()
         bigrams.clear()
@@ -538,5 +601,5 @@ class Dictionary(private val userDir: File?) {
     }
 
     val learnedCount: Int
-        @Synchronized get() = userWords.count { it.value >= 2 }
+        @Synchronized get() = userWords.count { it.value >= 2 && !exact.containsKey(it.key) }
 }

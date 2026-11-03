@@ -630,7 +630,7 @@ usar	513
 valor	513
 vivo	513
 calidad	512
-causa	512
+causa	520
 central	512
 director	512
 duda	512
@@ -1574,7 +1574,7 @@ estadounidense	473
 estatal	473
 ganó	473
 habia	473
-jajaja	473
+jajaja	520
 jorge	473
 león	473
 líneas	473
@@ -1612,7 +1612,7 @@ inversión	472
 llena	472
 llevo	472
 mirada	472
-ok	472
+ok	520
 pedido	472
 pequeñas	472
 playa	472
@@ -1702,7 +1702,7 @@ gobiernos	470
 hacerse	470
 iii	470
 india	470
-jaja	470
+jaja	520
 latina	470
 llegan	470
 municipio	470
@@ -2338,7 +2338,7 @@ rock	456
 salido	456
 seguros	456
 viajes	456
-xd	456
+xd	520
 agricultura	455
 alemán	455
 alternativa	455
@@ -3758,7 +3758,7 @@ indio	433
 indígena	433
 interesados	433
 jack	433
-jajajaja	433
+jajajaja	520
 laborales	433
 latinoamérica	433
 liberales	433
@@ -4257,7 +4257,7 @@ viejas	427
 vital	427
 víctor	427
 we	427
-whatsapp	427
+whatsapp	520
 xvi	427
 adolescente	426
 adquirir	426
@@ -5099,7 +5099,7 @@ modernos	418
 monto	418
 mortal	418
 municipalidad	418
-osea	418
+osea	520
 participan	418
 pasaporte	418
 pega	418
@@ -5655,7 +5655,7 @@ anunciado	412
 asistentes	412
 ave	412
 averiguar	412
-besos	412
+besos	520
 cansada	412
 carolina	412
 certeza	412
@@ -5740,7 +5740,7 @@ referéndum	412
 reír	412
 sarah	412
 secreta	412
-simón	412
+simón	520
 subido	412
 terminaron	412
 that	412
@@ -5828,7 +5828,7 @@ orgánica	411
 paralelo	411
 parientes	411
 parques	411
-pata	411
+pata	520
 patente	411
 pedí	411
 perdona	411
@@ -6162,7 +6162,7 @@ llevarse	408
 lleven	408
 localización	408
 logo	408
-lol	408
+lol	520
 lord	408
 may	408
 mencionó	408
@@ -6635,7 +6635,7 @@ fallecimiento	404
 faltas	404
 fantástico	404
 fc	404
-flaco	404
+flaco	520
 foco	404
 franquicia	404
 félix	404
@@ -6669,7 +6669,7 @@ ocupan	404
 ofrecido	404
 oraciones	404
 parroquia	404
-pe	404
+pe	520
 pelicula	404
 pepe	404
 pila	404
@@ -7299,7 +7299,7 @@ potable	399
 prestaciones	399
 profundas	399
 promueve	399
-ps	399
+ps	520
 quedaría	399
 racional	399
 realizarse	399
@@ -7821,7 +7821,7 @@ gregorio	395
 hubieras	395
 invitar	395
 iris	395
-jeje	395
+jeje	520
 joya	395
 juzgados	395
 latinoamericana	395
@@ -8070,7 +8070,7 @@ existido	393
 experimental	393
 explico	393
 extendido	393
-face	393
+face	520
 fantasmas	393
 filtros	393
 fuegos	393
@@ -8116,7 +8116,7 @@ pegado	393
 pense	393
 períodos	393
 pino	393
-pq	393
+pq	520
 profeta	393
 prosperidad	393
 provocando	393
@@ -9006,7 +9006,7 @@ vió	387
 vocabulario	387
 votó	387
 válida	387
-wey	387
+wey	520
 ávila	387
 accesorios	386
 acondicionado	386
@@ -9887,7 +9887,7 @@ baratas	381
 bay	381
 bell	381
 bio	381
-bro	381
+bro	520
 cabrones	381
 cafe	381
 call	381
@@ -10176,7 +10176,7 @@ sorprender	380
 stand	380
 sugirió	380
 taiwán	380
-tb	380
+tb	520
 tito	380
 tortuga	380
 trajeron	380
@@ -10193,7 +10193,7 @@ vigentes	380
 vivan	380
 voten	380
 wars	380
-xq	380
+xq	520
 órbita	380
 actuado	379
 acuerdas	379
@@ -11132,7 +11132,7 @@ cazar	374
 cejas	374
 centenares	374
 ceo	374
-chau	374
+chau	520
 chavista	374
 clasificado	374
 comités	374
@@ -11957,7 +11957,7 @@ mínimas	370
 nacho	370
 net	370
 neutralidad	370
-nose	370
+nose	520
 novena	370
 noveno	370
 ofrezco	370
@@ -12122,7 +12122,7 @@ investidura	369
 iso	369
 jacques	369
 jajajaj	369
-jejeje	369
+jejeje	520
 jodas	369
 kurt	369
 lienzo	369
@@ -13009,7 +13009,7 @@ indicación	365
 indiscutible	365
 inevitablemente	365
 infame	365
-insta	365
+insta	520
 instaló	365
 intendencia	365
 intermediarios	365
@@ -13507,7 +13507,7 @@ talvez	363
 tamaños	363
 tazas	363
 there	363
-tmb	363
+tmb	520
 tokyo	363
 tortugas	363
 tracción	363
@@ -14292,7 +14292,7 @@ estúpidas	359
 euskadi	359
 explotó	359
 finalizado	359
-flaca	359
+flaca	520
 food	359
 frasco	359
 fuck	359
@@ -15212,7 +15212,7 @@ atrapada	355
 aura	355
 aurelio	355
 avanzó	355
-aver	355
+aver	520
 banquillo	355
 bautismo	355
 belgrado	355
@@ -17411,7 +17411,7 @@ nicho	347
 notan	347
 numeros	347
 objeciones	347
-oe	347
+oe	520
 oo	347
 opositora	347
 orales	347
@@ -19532,7 +19532,7 @@ australianos	339
 auténticas	339
 basó	339
 bengala	339
-bn	339
+bn	520
 boulevard	339
 brito	339
 brutales	339
@@ -20053,7 +20053,7 @@ pepsi	338
 persecuciones	338
 pes	338
 plantado	338
-porfa	338
+porfa	520
 precisar	338
 predominio	338
 preescolar	338
@@ -20349,7 +20349,7 @@ persuadir	337
 piscinas	337
 pitt	337
 pliego	337
-pls	337
+pls	520
 plátanos	337
 podras	337
 poesías	337
@@ -20970,7 +20970,7 @@ muslo	335
 mítica	335
 navideña	335
 nc	335
-nel	335
+nel	520
 neutralizar	335
 nexo	335
 nomenclatura	335
@@ -21305,7 +21305,7 @@ myers	334
 naomi	334
 nestor	334
 niza	334
-nop	334
+nop	520
 observaron	334
 ocurran	334
 ol	334
@@ -25591,7 +25591,7 @@ ntra	322
 odiamos	322
 odioso	322
 ofendida	322
-okey	322
+okey	520
 olmos	322
 olvidaremos	322
 omg	322
@@ -28368,7 +28368,7 @@ protestaron	315
 próceres	315
 pta	315
 publicacion	315
-pucha	315
+pucha	520
 pulitzer	315
 punch	315
 quedemos	315
@@ -30621,7 +30621,7 @@ catastro	309
 catecismo	309
 ccoo	309
 cerezas	309
-chamba	309
+chamba	520
 chata	309
 cierras	309
 circunstancial	309
@@ -34606,7 +34606,7 @@ tun	301
 tártaros	301
 uniformemente	301
 urbanizaciones	301
-uwu	301
+uwu	520
 vació	301
 varonil	301
 vasija	301
@@ -38317,7 +38317,7 @@ ceta	293
 checar	293
 chelo	293
 chez	293
-chévere	293
+chévere	520
 circule	293
 claman	293
 clasicismo	293
@@ -41098,7 +41098,7 @@ gime	288
 giordano	288
 goldberg	288
 goteras	288
-grs	288
+grs	520
 guano	288
 guardaron	288
 guinda	288
@@ -41920,7 +41920,7 @@ yucatan	287
 zika	287
 zur	287
 ébano	287
-ña	287
+ña	520
 abandonaba	286
 abusada	286
 acad	286
@@ -42779,7 +42779,7 @@ jacta	285
 jardineros	285
 jarvis	285
 jer	285
-jiji	285
+jiji	520
 jonrón	285
 jovi	285
 joyero	285
@@ -43464,7 +43464,7 @@ pidieran	284
 pilates	284
 planeaban	284
 plasticidad	284
-plis	284
+plis	520
 pnc	284
 poo	284
 pooh	284
@@ -45994,7 +45994,7 @@ asentadas	279
 asimila	279
 asirios	279
 asoló	279
-asu	279
+asu	520
 atenderse	279
 aterrorizados	279
 atilio	279
@@ -47574,7 +47574,7 @@ monti	277
 mop	277
 motivacion	277
 moura	277
-msj	277
+msj	520
 munro	277
 naughty	277
 nauseabundo	277
@@ -49062,7 +49062,7 @@ axiomas	274
 ayúdennos	274
 azucarero	274
 añadirse	274
-bacán	274
+bacán	520
 bain	274
 bajarla	274
 bajemos	274
@@ -49083,7 +49083,7 @@ ble	274
 blindar	274
 brie	274
 britt	274
-bss	274
+bss	520
 buckley	274
 bulimia	274
 burguesas	274
@@ -49625,7 +49625,7 @@ webinar	274
 width	274
 wilkinson	274
 xy	274
-yara	274
+yara	520
 yee	274
 yunnan	274
 yupanqui	274
@@ -49998,3 +49998,33 @@ mentado	273
 merecería	273
 mermado	273
 metz	273
+porfis	520
+xfa	520
+xfavor	520
+tqm	520
+tkm	520
+ntp	520
+ntc	520
+jsjs	520
+jsjsjs	520
+causita	520
+chambear	520
+jato	520
+alucina	520
+sipi	520
+broder	520
+dnd	520
+msjs	520
+grax	520
+salu	520
+porsiaca	520
+oki	520
+okis	520
+gaaa	520
+gaa	520
+manyas	520
+jerma	520
+chaito	520
+wsp	520
+tiktok	520
+ñaña	520

@@ -66,14 +66,14 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onCreate()
         XpManager.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
-        dict = Dictionary(filesDir)
+        dict = Dictionary.get(filesDir)
         val th = HandlerThread("tecladoxp-dict")
         th.start()
         workerThread = th
         worker = Handler(th.looper)
         worker.post {
             try {
-                assets.open("es.txt").use { dict.load(it) }
+                if (!dict.loaded) assets.open("es.txt").use { dict.load(it) }
             } catch (_: Exception) {
             }
             main.post { refreshSuggestions() }
