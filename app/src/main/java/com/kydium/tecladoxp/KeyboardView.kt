@@ -445,16 +445,16 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val ty = bcy + dp(11f)
         textPaint.typeface = Typeface.DEFAULT_BOLD
         textPaint.textSize = sp(11f)
-        textPaint.textAlign = Paint.Align.LEFT
         textPaint.color = t.text
-        c.drawText(xpLine, barL, ty, textPaint)
-        textPaint.textAlign = Paint.Align.CENTER
+        c.drawText(xpLine, (barL + textR) / 2f, ty, textPaint)
         if (combo >= 5 && now < comboExpire) {
             val label = "⚡x" + String.format("%.1f", XpManager.comboMultiplier(combo))
             val pulse = 1f + 0.08f * sin(now / 120.0).toFloat()
             textPaint.textSize = sp(11f) * pulse
             textPaint.color = t.accent
-            c.drawText(label, (barL + textR) / 2f, ty, textPaint)
+            textPaint.textAlign = Paint.Align.RIGHT
+            c.drawText(label, textR, ty, textPaint)
+            textPaint.textAlign = Paint.Align.CENTER
             postInvalidateDelayed(60)
         } else if (combo >= 5 && now - comboExpire < 200) {
             postInvalidateDelayed(60)
