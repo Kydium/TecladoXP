@@ -11,8 +11,11 @@ android {
         applicationId = "com.kydium.tecladoxp"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // Cada compilación en GitHub Actions es una versión nueva (build-<número>),
+        // así el botón "Actualizar" de la app sabe si hay algo más reciente.
+        val buildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionCode = buildNumber
+        versionName = "1.$buildNumber"
     }
 
     // Llave fija: cada APK nuevo se instala encima del anterior sin desinstalar

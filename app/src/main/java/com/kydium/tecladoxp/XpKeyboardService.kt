@@ -104,6 +104,11 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val v = kv ?: return
         v.theme = Themes.byId(settings.getString("theme", "noche"))
             .let { if (it.unlockLevel <= XpManager.level()) it else Themes.all[0] }
+        val lvl = XpManager.level()
+        v.xpStyle = XpBarStyles.byId(settings.getString("xpstyle", "clasica"))
+            .let { if (it.unlockLevel <= lvl) it.id else "clasica" }
+        v.trailStyle = TrailStyles.byId(settings.getString("trailstyle", "clasica"))
+            .let { if (it.unlockLevel <= lvl) it.id else "clasica" }
         v.heightScale = when (settings.getInt("height", 1)) { 0 -> 0.88f; 2 -> 1.14f; else -> 1f }
         v.showHints = settings.getBoolean("hints", true)
         v.showFloatingXp = settings.getBoolean("floatxp", true)
@@ -331,8 +336,12 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val v = kv ?: return
         v.addFloatingXp(r.gained)
         if (r.leveledUp) {
-            val newThemes = (before + 1..r.level).flatMap { Themes.unlockedAt(it) }
-            val extra = if (newThemes.isNotEmpty()) "Tema ${newThemes.joinToString { it.name }} desbloqueado" else ""
+            val range = (before + 1)..r.level
+            val unlocks = ArrayList<String>()
+            Themes.all.filter { it.unlockLevel in range }.forEach { unlocks.add("tema ${it.name}") }
+            TrailStyles.all.filter { it.unlockLevel in range }.forEach { unlocks.add("estela ${it.name}") }
+            XpBarStyles.all.filter { it.unlockLevel in range }.forEach { unlocks.add("barra ${it.name}") }
+            val extra = if (unlocks.isNotEmpty()) "Nuevo: " + unlocks.joinToString(", ") else ""
             v.showLevelUp(r.level, XpManager.titleFor(r.level), extra)
             vibrate(60)
         }

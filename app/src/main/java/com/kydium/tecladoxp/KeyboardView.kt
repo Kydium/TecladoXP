@@ -6,7 +6,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -50,6 +49,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     var glideEnabled = true
     var showFloatingXp = true
     var longPressMs = 320L
+    var xpStyle = "clasica"
+        set(v) { field = v; invalidate() }
+    var trailStyle = "clasica"
+    val renderer = StyleRenderer(resources.displayMetrics)
 
     private val letters = Layouts.letters()
     private val symbols = Layouts.symbols()
@@ -90,18 +93,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val bgPaint = Paint()
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-    }
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-    }
     private var bgShader: Shader? = null
     private val rect = RectF()
-    private val path = Path()
 
     // ------------------------------------------------------------------ touch state
     private enum class Mode { NONE, PRESS, POPUP, GLIDE, CURSOR, DELSWIPE, STRIP }
@@ -240,51 +233,23 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
         drawStrip(canvas, now)
         drawKeys(canvas, now)
-        drawTrail(canvas, now)
+        val trailAnim = drawTrail(canvas, now)
         drawPreview(canvas)
         drawPopup(canvas)
         val animating = drawFloats(canvas, now) or drawParticles(canvas, now) or drawBanner(canvas, now)
-        if (animating || (trailFadeStart > 0 && now - trailFadeStart < 300)) postInvalidateOnAnimation()
+        if (animating || trailAnim) postInvalidateOnAnimation()
     }
 
     private fun drawStrip(c: Canvas, now: Long) {
         val t = theme
         val w = width.toFloat()
-        // level badge with progress ring
+        // level badge + xp bar (style chosen in settings)
         val bcx = badgeW / 2f
         val bcy = topH / 2f - dp(1f)
-        val r = dp(17f)
-        keyPaint.shader = null
-        keyPaint.color = if (stripPressed == -2 && mode == Mode.STRIP) t.keyPressed else t.keySpecial
-        c.drawCircle(bcx, bcy, r, keyPaint)
-        ringPaint.strokeWidth = dp(3.2f)
-        ringPaint.color = withAlpha(t.textMuted, 70)
-        c.drawCircle(bcx, bcy, r, ringPaint)
-        ringPaint.color = t.accent
-        rect.set(bcx - r, bcy - r, bcx + r, bcy + r)
-        c.drawArc(rect, -90f, 360f * xpFrac, false, ringPaint)
-        textPaint.color = t.text
-        textPaint.typeface = Typeface.DEFAULT_BOLD
-        textPaint.textSize = sp(if (level >= 100) 12f else 15f)
-        c.drawText(level.toString(), bcx, bcy - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
-        textPaint.textSize = sp(7.5f)
-        textPaint.color = t.textMuted
-        c.drawText("NV", bcx, bcy - r + dp(7.5f), textPaint)
-
-        // xp bar at the bottom of the strip
-        val barH = dp(3.5f)
+        renderer.drawBadge(c, xpStyle, t, bcx, bcy, dp(17f), level, xpFrac, stripPressed == -2 && mode == Mode.STRIP)
+        val barH = if (xpStyle == "club") dp(17f) else dp(6f)
         val barY = topH - barH - dp(1f)
-        linePaint.shader = null
-        linePaint.color = withAlpha(t.textMuted, 45)
-        rect.set(badgeW, barY, w - dp(8f), barY + barH)
-        c.drawRoundRect(rect, barH, barH, linePaint)
-        val fillR = badgeW + (w - dp(8f) - badgeW) * xpFrac
-        if (fillR > badgeW + 1f) {
-            linePaint.shader = LinearGradient(badgeW, 0f, w, 0f, t.accent, t.accent2, Shader.TileMode.CLAMP)
-            rect.set(badgeW, barY, fillR, barY + barH)
-            c.drawRoundRect(rect, barH, barH, linePaint)
-            linePaint.shader = null
-        }
+        renderer.drawBar(c, xpStyle, t, badgeW, w - dp(8f), barY + barH / 2f, xpFrac, level)
 
         // suggestions or idle info
         val any = suggestions.any { it.isNotEmpty() }
@@ -416,26 +381,20 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         }
     }
 
-    private fun drawTrail(c: Canvas, now: Long) {
-        if (gCount < 2) return
+    private fun drawTrail(c: Canvas, now: Long): Boolean {
+        val particles = renderer.drawParticles(c)
+        if (gCount < 2) return particles
         val alpha: Int = when {
-            mode == Mode.GLIDE -> 220
+            mode == Mode.GLIDE -> 230
             trailFadeStart > 0 -> {
                 val e = now - trailFadeStart
-                if (e >= 300) { gCount = 0; trailFadeStart = 0; return }
-                (220 * (1f - e / 300f)).toInt()
+                if (e >= 300) { gCount = 0; trailFadeStart = 0; return particles }
+                (230 * (1f - e / 300f)).toInt()
             }
-            else -> return
+            else -> return particles
         }
-        path.reset()
-        path.moveTo(gx[0], gy[0])
-        for (i in 1 until gCount) path.lineTo(gx[i], gy[i])
-        trailPaint.strokeWidth = dp(7f)
-        trailPaint.color = withAlpha(theme.accent, alpha / 3)
-        c.drawPath(path, trailPaint)
-        trailPaint.strokeWidth = dp(3.5f)
-        trailPaint.color = withAlpha(theme.accent2, alpha)
-        c.drawPath(path, trailPaint)
+        renderer.drawTrail(c, trailStyle, theme, gx, gy, gCount, alpha)
+        return true
     }
 
     private fun drawPreview(c: Canvas) {
@@ -651,6 +610,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         gx[gCount] = x
         gy[gCount] = y
         gCount++
+        if (mode == Mode.GLIDE) renderer.onTrailPoint(trailStyle, theme, x, y)
     }
 
     private fun cancelGesture() {

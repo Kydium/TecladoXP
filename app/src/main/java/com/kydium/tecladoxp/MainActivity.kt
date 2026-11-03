@@ -13,6 +13,7 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -25,6 +26,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
+import java.io.File
 import java.time.LocalDate
 import java.util.Locale
 
@@ -42,6 +45,16 @@ class MainActivity : Activity() {
     private val accent = Color.parseColor("#8B5CF6")
     private val accent2 = Color.parseColor("#22D3EE")
     private val gold = Color.parseColor("#FACC15")
+
+    private val renderer by lazy { StyleRenderer(resources.displayMetrics) }
+
+    // updater state (survives re-renders)
+    private var updState = "idle"   // idle, checking, latest, available, downloading, error
+    private var updRelease: Updater.Release? = null
+    private var updProgress = 0
+    private var updStatus: TextView? = null
+    private var updButton: TextView? = null
+    private var checkedOnce = false
 
     private fun dp(v: Float) = (v * resources.displayMetrics.density)
     private fun dpi(v: Float) = dp(v).toInt()
@@ -126,12 +139,169 @@ class MainActivity : Activity() {
         })
 
         renderSetup()
+        renderUpdate()
         renderProfile(lvl, into, need)
         renderStats()
         renderAchievements()
         renderThemes(lvl)
+        renderStylePicker(lvl, "Barra de experiencia", "Cómo se ve tu nivel y tu barra de XP en el teclado.",
+            XpBarStyles.all, "xpstyle") { o, unlocked, selected -> BarSwatch(this, o, unlocked, selected) }
+        renderStylePicker(lvl, "Estela al deslizar", "El rastro que deja tu dedo al escribir deslizando.",
+            TrailStyles.all, "trailstyle") { o, unlocked, selected -> TrailSwatch(this, o, unlocked, selected) }
         renderSettings()
         renderTest()
+    }
+
+    private fun styleButton(tv: TextView, primary: Boolean) {
+        tv.setTextColor(if (primary) Color.WHITE else textC)
+        tv.background = if (primary) GradientDrawable(
+            GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(accent, Color.parseColor("#6366F1"))
+        ).apply { cornerRadius = dp(14f) } else rounded(cardBg2, 14f)
+    }
+
+    // ------------------------------------------------------------ updates
+
+    private fun renderUpdate() {
+        val c = card()
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(text("Actualizaciones", 17f, textC, true))
+        val status = text("", 12.5f, muted)
+        col.addView(status)
+        row.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val btn = button("Buscar", false) { onUpdateButton() }
+        row.addView(btn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dpi(10f)
+        })
+        c.addView(row)
+        root.addView(c)
+        updStatus = status
+        updButton = btn
+        applyUpdState()
+        if (!checkedOnce) {
+            checkedOnce = true
+            checkUpdates()
+        }
+    }
+
+    private fun applyUpdState() {
+        val st = updStatus ?: return
+        val b = updButton ?: return
+        val cur = "Versión ${Updater.currentName(this)}"
+        val rel = updRelease
+        when (updState) {
+            "checking" -> { st.text = "$cur · buscando…"; b.text = "…"; styleButton(b, false) }
+            "latest" -> { st.text = "$cur · ya tienes la última ✅"; b.text = "Buscar"; styleButton(b, false) }
+            "available" -> {
+                st.text = "$cur · nueva versión 1.${rel?.code ?: ""} disponible 🎉"
+                b.text = "Actualizar"; styleButton(b, true)
+            }
+            "downloading" -> { st.text = "Descargando 1.${rel?.code ?: ""}… $updProgress%"; b.text = "$updProgress%"; styleButton(b, false) }
+            "error" -> { st.text = "$cur · sin conexión con GitHub"; b.text = "Reintentar"; styleButton(b, false) }
+            else -> { st.text = cur; b.text = "Buscar"; styleButton(b, false) }
+        }
+    }
+
+    private fun onUpdateButton() {
+        when (updState) {
+            "available" -> startDownload()
+            "checking", "downloading" -> {}
+            else -> checkUpdates()
+        }
+    }
+
+    private fun checkUpdates() {
+        updState = "checking"
+        applyUpdState()
+        Thread {
+            val r = try { Updater.fetchLatest() } catch (_: Exception) { null }
+            runOnUiThread {
+                updRelease = r
+                updState = when {
+                    r == null -> "error"
+                    r.code > Updater.currentCode(this) -> "available"
+                    else -> "latest"
+                }
+                applyUpdState()
+            }
+        }.start()
+    }
+
+    private fun startDownload() {
+        val rel = updRelease ?: return
+        if (!Updater.canInstall(this)) {
+            Toast.makeText(this, "Permite \"Instalar apps desconocidas\" para Teclado XP y vuelve a tocar Actualizar", Toast.LENGTH_LONG).show()
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            } catch (_: Exception) {
+            }
+            return
+        }
+        updState = "downloading"
+        updProgress = 0
+        applyUpdState()
+        val dest = File(cacheDir, "update.apk")
+        Thread {
+            val ok = try {
+                Updater.download(rel, dest) { p -> runOnUiThread { updProgress = p; applyUpdState() } }
+            } catch (_: Exception) { false }
+            runOnUiThread {
+                if (!ok) {
+                    updState = "error"
+                    applyUpdState()
+                    return@runOnUiThread
+                }
+                updState = "available"
+                applyUpdState()
+                try {
+                    Updater.install(this, dest)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "No se pudo instalar: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    // ------------------------------------------------------------ style pickers
+
+    private fun renderStylePicker(
+        lvl: Int, title: String, desc: String, options: List<StyleOption>, key: String,
+        factory: (StyleOption, Boolean, Boolean) -> View
+    ) {
+        val c = card()
+        sectionTitle(c, title)
+        c.addView(text(desc, 12.5f, muted).apply { setPadding(0, 0, 0, dpi(10f)) })
+        val current = settings.getString(key, "clasica")
+        for (r in options.indices step 3) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (j in 0 until 3) {
+                val idx = r + j
+                val lp = LinearLayout.LayoutParams(0, dpi(96f), 1f).apply {
+                    leftMargin = dpi(4f); rightMargin = dpi(4f); bottomMargin = dpi(8f)
+                }
+                if (idx >= options.size) {
+                    row.addView(View(this), lp)
+                    continue
+                }
+                val o = options[idx]
+                val unlocked = lvl >= o.unlockLevel
+                val v = factory(o, unlocked, o.id == current)
+                v.setOnClickListener {
+                    if (unlocked) {
+                        settings.edit().putString(key, o.id).apply()
+                        render()
+                    } else {
+                        Toast.makeText(this, "Se desbloquea en el nivel ${o.unlockLevel}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                row.addView(v, lp)
+            }
+            c.addView(row)
+        }
+        root.addView(c)
     }
 
     private fun renderSetup() {
@@ -283,7 +453,7 @@ class MainActivity : Activity() {
                         settings.edit().putString("theme", t.id).apply()
                         render()
                     } else {
-                        android.widget.Toast.makeText(this, "Se desbloquea en el nivel ${t.unlockLevel}", android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Se desbloquea en el nivel ${t.unlockLevel}", Toast.LENGTH_SHORT).show()
                     }
                 }
                 row.addView(sw, lp)
@@ -479,6 +649,77 @@ class MainActivity : Activity() {
                 c.drawRoundRect(r, dp(14f), dp(14f), p)
                 p.style = Paint.Style.FILL
             }
+        }
+    }
+
+    private fun currentTheme(): KbTheme {
+        val t = Themes.byId(settings.getString("theme", "noche"))
+        return if (t.unlockLevel <= XpManager.level()) t else Themes.all[0]
+    }
+
+    /** Common frame for style previews: theme background, name, lock and selection. */
+    private abstract inner class StyleSwatch(ctx: Context, val o: StyleOption, val unlocked: Boolean, val selected: Boolean) : View(ctx) {
+        protected val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        protected val r = RectF()
+        protected val t: KbTheme = currentTheme()
+
+        abstract fun drawContent(c: Canvas, w: Float, h: Float)
+
+        override fun onDraw(c: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            r.set(0f, 0f, w, h)
+            p.shader = LinearGradient(0f, 0f, 0f, h, t.bgTop, t.bgBottom, Shader.TileMode.CLAMP)
+            c.drawRoundRect(r, dp(14f), dp(14f), p)
+            p.shader = null
+            drawContent(c, w, h)
+            p.textAlign = Paint.Align.CENTER
+            p.typeface = Typeface.DEFAULT_BOLD
+            p.textSize = dp(12f)
+            p.color = t.text
+            c.drawText(o.name, w / 2f, h - dp(21f), p)
+            p.typeface = Typeface.DEFAULT
+            p.textSize = dp(10f)
+            p.color = t.textMuted
+            c.drawText(if (unlocked) (if (selected) "En uso" else "Toca para usar") else "🔒 Nivel ${o.unlockLevel}", w / 2f, h - dp(8f), p)
+            if (!unlocked) {
+                p.color = Color.argb(120, 0, 0, 0)
+                r.set(0f, 0f, w, h)
+                c.drawRoundRect(r, dp(14f), dp(14f), p)
+            }
+            if (selected) {
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = dp(2.5f)
+                p.color = t.accent
+                r.set(dp(1.25f), dp(1.25f), w - dp(1.25f), h - dp(1.25f))
+                c.drawRoundRect(r, dp(14f), dp(14f), p)
+                p.style = Paint.Style.FILL
+            }
+        }
+    }
+
+    private inner class BarSwatch(ctx: Context, o: StyleOption, unlocked: Boolean, selected: Boolean) :
+        StyleSwatch(ctx, o, unlocked, selected) {
+        override fun drawContent(c: Canvas, w: Float, h: Float) {
+            val cy = h * 0.34f
+            val lvl = XpManager.level()
+            renderer.drawBadge(c, o.id, t, dp(22f), cy, dp(13f), lvl, 0.65f, false)
+            renderer.drawBar(c, o.id, t, dp(40f), w - dp(6f), cy, 0.65f, lvl)
+        }
+    }
+
+    private inner class TrailSwatch(ctx: Context, o: StyleOption, unlocked: Boolean, selected: Boolean) :
+        StyleSwatch(ctx, o, unlocked, selected) {
+        override fun drawContent(c: Canvas, w: Float, h: Float) {
+            val n = 48
+            val xs = FloatArray(n)
+            val ys = FloatArray(n)
+            for (i in 0 until n) {
+                val f = i / (n - 1f)
+                xs[i] = dp(12f) + (w - dp(24f)) * f
+                ys[i] = h * 0.34f + kotlin.math.sin(f * Math.PI * 2.2).toFloat() * h * 0.15f
+            }
+            renderer.drawTrail(c, o.id, t, xs, ys, n, 235, preview = true)
         }
     }
 }
