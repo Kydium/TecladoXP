@@ -92,22 +92,28 @@ object XpManager {
         init(ctx)
     }
 
-    // ---------- Levels ----------
-    fun xpForNext(level: Int): Long = (100.0 * level.toDouble().pow(1.6) + 100.0).toLong()
+    // ---------- Levels (same curve as GTA Online's RP ranks) ----------
+    /** Total XP needed to reach ranks 1..100 (index 0 = rank 1). */
+    private val GTA_TOTAL = longArrayOf(
+        0, 800, 2100, 3800, 6100, 9500, 12500, 16000, 19800, 24000, 28500, 33400, 38700, 44200, 50200, 56400, 63000, 69900, 77100, 84700, 92500, 100700, 109200, 118000, 127100, 136500, 146200, 156200, 166500, 177100, 188000, 199200, 210700, 222400, 234500, 246800, 259400, 272300, 285500, 299000, 312700, 326800, 341000, 355600, 370500, 385600, 401000, 416600, 432600, 448800, 465200, 482000, 499000, 516300, 533800, 551600, 569600, 588000, 606500, 625400, 644500, 663800, 683400, 703300, 723400, 743800, 764500, 785400, 806500, 827900, 849600, 871500, 893600, 916000, 938700, 961600, 984700, 1008100, 1031800, 1055700, 1079800, 1104200, 1128800, 1153700, 1178800, 1204200, 1229800, 1255600, 1281700, 1308100, 1334600, 1361400, 1388500, 1415800, 1443300, 1471100, 1499100, 1527300, 1555800, 1584350
+    )
+
+    /** Total XP needed to reach [rank]. From rank 100 on, GTA's formula: 25x² + 23575x − 1023150. */
+    fun totalFor(rank: Int): Long = when {
+        rank <= 1 -> 0L
+        rank <= 100 -> GTA_TOTAL[rank - 1]
+        else -> 25L * rank * rank + 23575L * rank - 1023150L
+    }
+
+    fun xpForNext(level: Int): Long = totalFor(level + 1) - totalFor(level)
 
     fun level(): Int = levelInfo().first
 
     /** (level, xp inside current level, xp needed for next level) */
     fun levelInfo(xp: Long = totalXp): Triple<Int, Long, Long> {
         var lvl = 1
-        var rest = xp
-        while (lvl < MAX_LEVEL) {
-            val need = xpForNext(lvl)
-            if (rest < need) return Triple(lvl, rest, need)
-            rest -= need
-            lvl++
-        }
-        return Triple(MAX_LEVEL, 0, 1)
+        while (lvl < MAX_LEVEL - 1 && totalFor(lvl + 1) <= xp) lvl++
+        return Triple(lvl, xp - totalFor(lvl), xpForNext(lvl))
     }
 
     fun progress(): Float {

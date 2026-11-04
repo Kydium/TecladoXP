@@ -361,9 +361,9 @@ class MainActivity : Activity() {
         })
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(text(
-            if (lvl >= XpManager.MAX_LEVEL) "NIVEL MÁXIMO" else "${fmt(into)} / ${fmt(need)} XP", 13f, textC, true
+            "${fmt(XpManager.totalXp)} / ${fmt(XpManager.totalFor(lvl + 1))} XP", 13f, textC, true
         ), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(text("Total: ${fmt(XpManager.totalXp)} XP", 13f, muted))
+        row.addView(text("Faltan ${fmt(need - into)}", 13f, muted))
         row.setPadding(0, dpi(6f), 0, 0)
         c.addView(row)
 
