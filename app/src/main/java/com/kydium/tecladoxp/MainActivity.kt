@@ -342,7 +342,7 @@ class MainActivity : Activity() {
             setPadding(dpi(16f), 0, 0, 0)
         }
         info.addView(text(XpManager.titleFor(lvl), 22f, textC, true))
-        val nextTitleLevel = listOf(3, 6, 10, 15, 20, 30, 40, 50, 75, 100).firstOrNull { it > lvl }
+        val nextTitleLevel = listOf(3, 6, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 300).firstOrNull { it > lvl }
         info.addView(text(
             if (nextTitleLevel != null) "Siguiente rango: ${XpManager.titleFor(nextTitleLevel)} (nivel $nextTitleLevel)"
             else "Rango máximo alcanzado", 12.5f, muted

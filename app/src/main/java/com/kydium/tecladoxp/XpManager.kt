@@ -27,7 +27,8 @@ class XpResult(
 )
 
 object XpManager {
-    const val MAX_LEVEL = 100
+    /** No real cap: levels are infinite (each one needs a bit more XP). */
+    const val MAX_LEVEL = Int.MAX_VALUE
     private const val COMBO_WINDOW_MS = 5000L
 
     private var prefs: SharedPreferences? = null
@@ -116,6 +117,9 @@ object XpManager {
     }
 
     fun titleFor(level: Int): String = when {
+        level >= 300 -> "Eterno"
+        level >= 200 -> "Cósmico"
+        level >= 150 -> "Inmortal"
         level >= 100 -> "Dios del Teclado"
         level >= 75 -> "Mítico"
         level >= 50 -> "Leyenda"
