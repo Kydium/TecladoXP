@@ -3,6 +3,13 @@ package com.kydium.tecladoxp
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.widget.Toast
+import java.util.Locale
 import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.Handler
@@ -89,6 +96,8 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onDestroy() {
         dict.saveAsync()
         sounds?.release()
+        recognizer?.destroy()
+        recognizer = null
         workerThread?.quitSafely()
         super.onDestroy()
     }
@@ -193,6 +202,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        cancelVoice()
         composing.setLength(0)
         lastCorrection = null
         dict.saveAsync()
@@ -719,6 +729,136 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             startActivity(i)
             requestHideSelf(0)
         } catch (_: Exception) {
+        }
+    }
+
+    // ================================================================= voice typing
+
+    private var recognizer: SpeechRecognizer? = null
+    private var listening = false
+
+    override fun onMic() {
+        if (listening) {
+            recognizer?.stopListening()   // final results still arrive
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            try {
+                startActivity(Intent(this, PermisoMicActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (_: Exception) {
+            }
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Toast.makeText(this, "Tu celular no tiene reconocimiento de voz (instala la app de Google)", Toast.LENGTH_LONG).show()
+            return
+        }
+        val ic = ic() ?: return
+        val v = kv ?: return
+        lastCorrection = null
+        if (composing.isNotEmpty()) commitWord(!lastWordWasGlide)
+        val r = recognizer ?: SpeechRecognizer.createSpeechRecognizer(this).also {
+            it.setRecognitionListener(voiceListener)
+            recognizer = it
+        }
+        val lang = Locale.getDefault().let { if (it.language == "es") it.toLanguageTag() else "es-419" }
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+        }
+        voiceCaps = v.shiftState > 0
+        voiceNeedsSpace = (ic.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
+        listening = true
+        v.setVoice(true)
+        vibrate(20)
+        try {
+            r.startListening(intent)
+        } catch (_: Exception) {
+            listening = false
+            v.setVoice(false)
+        }
+    }
+
+    private var voiceCaps = false
+    private var voiceNeedsSpace = false
+
+    private fun formatVoice(text: String): String {
+        var t = text.trim()
+        if (t.isEmpty()) return t
+        if (voiceCaps) t = t.replaceFirstChar { it.uppercaseChar() }
+        if (voiceNeedsSpace) t = " $t"
+        return t
+    }
+
+    private fun cancelVoice() {
+        if (!listening) return
+        listening = false
+        try { recognizer?.cancel() } catch (_: Exception) {}
+        if (composing.isNotEmpty()) {
+            ic()?.commitText("", 1)
+            composing.setLength(0)
+        }
+        kv?.setVoice(false)
+    }
+
+    private val voiceListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) { kv?.setVoiceLevel(rmsdB) }
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            if (!listening) return
+            val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
+            if (text.isBlank()) return
+            val ic = ic() ?: return
+            composing.setLength(0)
+            composing.append(formatVoice(text))
+            ic.setComposingText(composing, 1)
+            kv?.setVoice(true, text)
+        }
+
+        override fun onResults(results: Bundle?) {
+            val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+            listening = false
+            kv?.setVoice(false)
+            val ic = ic() ?: return
+            val out = formatVoice(text)
+            if (out.isBlank()) {
+                if (composing.isNotEmpty()) ic.commitText("", 1)
+                composing.setLength(0)
+                return
+            }
+            ic.commitText(out, 1)
+            composing.setLength(0)
+            lastWordWasGlide = false
+            val words = text.trim().split(Regex("\\s+")).filter { w -> w.any { it.isLetter() } }
+            for (w in words) afterWordCommitted(w.trim { !it.isLetterOrDigit() }, WordKind.TYPED)
+            kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
+            refreshSuggestions()
+        }
+
+        override fun onError(error: Int) {
+            val hadText = composing.isNotEmpty()
+            listening = false
+            kv?.setVoice(false)
+            if (hadText) {
+                // keep what was already heard
+                ic()?.finishComposingText()
+                composing.setLength(0)
+            }
+            val msg = when (error) {
+                SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> if (hadText) null else "No te escuché, intenta otra vez"
+                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Sin internet para el dictado"
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Falta el permiso del micrófono"
+                SpeechRecognizer.ERROR_CLIENT -> null
+                else -> "No se pudo usar el micrófono (error $error)"
+            }
+            if (msg != null) Toast.makeText(this@XpKeyboardService, msg, Toast.LENGTH_SHORT).show()
         }
     }
 

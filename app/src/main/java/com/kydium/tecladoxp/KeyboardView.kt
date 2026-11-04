@@ -35,6 +35,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         fun onSuggestion(index: Int)
         fun onBadge()
         fun onSpaceLongPress()
+        fun onMic()
         fun onPressFeedback()
     }
 
@@ -155,6 +156,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     fun setLayout(type: LayoutType) {
         emojiMode = false
+        voiceMode = false
         layout = when (type) {
             LayoutType.LETTERS -> letters
             LayoutType.SYMBOLS -> symbols
@@ -292,6 +294,87 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             emojiVel *= 0.93f
             postInvalidateOnAnimation()
         }
+    }
+
+    // ------------------------------------------------------------------ voice typing
+    var voiceMode = false
+        private set
+    private var voiceText = ""
+    private var voiceLevel = 0f
+    private var voiceStart = 0L
+
+    fun setVoice(on: Boolean, text: String = "") {
+        if (on && !voiceMode) voiceStart = SystemClock.uptimeMillis()
+        voiceMode = on
+        voiceText = text
+        if (on) cancelGesture()
+        invalidate()
+    }
+
+    /** Microphone loudness (rms dB from the recognizer, about -2..10). */
+    fun setVoiceLevel(rms: Float) {
+        voiceLevel = voiceLevel * 0.6f + ((rms + 2f) / 12f).coerceIn(0f, 1f) * 0.4f
+        if (voiceMode) invalidate()
+    }
+
+    private fun drawMicIcon(c: Canvas, cx: Float, cy: Float, s: Float, color: Int) {
+        linePaint.shader = null
+        linePaint.color = color
+        linePaint.style = Paint.Style.FILL
+        rect.set(cx - s * 0.32f, cy - s, cx + s * 0.32f, cy + s * 0.25f)
+        c.drawRoundRect(rect, s * 0.32f, s * 0.32f, linePaint)
+        linePaint.style = Paint.Style.STROKE
+        linePaint.strokeWidth = s * 0.16f
+        linePaint.strokeCap = Paint.Cap.ROUND
+        rect.set(cx - s * 0.62f, cy - s * 0.55f, cx + s * 0.62f, cy + s * 0.62f)
+        c.drawArc(rect, 0f, 180f, false, linePaint)
+        c.drawLine(cx, cy + s * 0.62f, cx, cy + s * 0.95f, linePaint)
+        linePaint.style = Paint.Style.FILL
+    }
+
+    private fun drawMicButton(c: Canvas, cx: Float, cy: Float, t: KbTheme) {
+        if (voiceMode) {
+            keyPaint.shader = null
+            keyPaint.color = t.accent
+            c.drawCircle(cx, cy, dp(15f), keyPaint)
+            drawMicIcon(c, cx, cy, dp(8f), Color.WHITE)
+        } else {
+            if (mode == Mode.STRIP && stripPressed == -3) {
+                keyPaint.shader = null
+                keyPaint.color = t.keyPressed
+                c.drawCircle(cx, cy, dp(15f), keyPaint)
+            }
+            drawMicIcon(c, cx, cy, dp(8f), t.text)
+        }
+    }
+
+    private fun drawVoicePanel(c: Canvas, t: KbTheme) {
+        val w = width.toFloat()
+        val top = topH
+        val cx = w / 2f
+        val cy = top + (height - top) * 0.40f
+        val now = SystemClock.uptimeMillis()
+        // pulsing rings driven by the voice level
+        val base = dp(34f)
+        val breathe = 0.5f + 0.5f * sin((now - voiceStart) / 260.0).toFloat()
+        for (i in 3 downTo 1) {
+            keyPaint.shader = null
+            keyPaint.color = withAlpha(t.accent, 35 + 10 * (3 - i))
+            c.drawCircle(cx, cy, base + i * dp(9f) * (0.35f + voiceLevel + 0.15f * breathe), keyPaint)
+        }
+        keyPaint.color = t.accent
+        c.drawCircle(cx, cy, base, keyPaint)
+        drawMicIcon(c, cx, cy, dp(15f), Color.WHITE)
+        textPaint.typeface = Typeface.DEFAULT_BOLD
+        textPaint.color = t.text
+        val shown = if (voiceText.isEmpty()) "Habla ahora…" else voiceText
+        fitText(shown, w - dp(32f), 17f)
+        c.drawText(shown, cx, cy + base + dp(40f), textPaint)
+        textPaint.typeface = Typeface.DEFAULT
+        textPaint.textSize = sp(12f)
+        textPaint.color = t.textMuted
+        c.drawText("Toca para terminar", cx, height - dp(16f), textPaint)
+        postInvalidateOnAnimation()
     }
 
     fun setSuggestions(s: List<String>, bold: Int) {
@@ -457,8 +540,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val t = theme
         val w = width.toFloat()
 
-        // ---- row 1: suggestions (full width)
-        val slotW = w / 3f
+        // ---- row 1: suggestions + mic button at the right
+        val micW = dp(44f)
+        drawMicButton(c, w - micW / 2f, sugH / 2f, t)
+        val slotW = (w - micW) / 3f
         val textY = sugH / 2f + dp(1f)
         for (i in 0..2) {
             val s = suggestions[i]
@@ -556,6 +641,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val radius = dp(7f)
         val pressed = if (mode == Mode.PRESS || mode == Mode.POPUP || mode == Mode.CURSOR || mode == Mode.DELSWIPE) curKey else null
         var idx = 0
+        if (voiceMode) {
+            drawVoicePanel(c, t)
+            return
+        }
         if (emojiMode) drawEmojiPanel(c)
         val keys = if (emojiMode) emojiBar else layout.allKeys
         for (k in keys) {
@@ -890,7 +979,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun stripIndexAt(x: Float, y: Float): Int {
         if (y >= sugH) return -2   // xp row opens the profile
-        val i = (x / (width / 3f)).toInt().coerceIn(0, 2)
+        val micW = dp(44f)
+        if (x >= width - micW) return -3   // microphone
+        val i = (x / ((width - micW) / 3f)).toInt().coerceIn(0, 2)
         return if (suggestions[i].isNotEmpty()) i else -1
     }
 
@@ -977,6 +1068,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             bannerStart = SystemClock.uptimeMillis()
             mode = Mode.NONE
             invalidate()
+            return
+        }
+        if (voiceMode && y >= topH) {
+            // tap anywhere on the voice panel to finish
+            mode = Mode.NONE
+            listener.onMic()
             return
         }
         if (y < topH) {
@@ -1130,7 +1227,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             Mode.STRIP -> {
                 val i = stripIndexAt(x, y)
                 if (i == stripPressed) {
-                    if (i == -2) listener.onBadge() else if (i >= 0) listener.onSuggestion(i)
+                    if (i == -2) listener.onBadge()
+                    else if (i == -3) listener.onMic()
+                    else if (i >= 0) listener.onSuggestion(i)
                 }
                 stripPressed = -1
             }
