@@ -59,6 +59,60 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var autoSpace = false
     private var lastSpaceTime = 0L
     private var prevWord: String? = null
+    private var prevWord2: String? = null
+
+    /** Previous one or two words for predictions ("te lo"), null at the start of a sentence. */
+    private fun context(): String? {
+        val p = prevWord ?: return null
+        val p2 = prevWord2
+        return if (p2 != null) "$p2 $p" else p
+    }
+
+    // ================================================================= languages
+
+    private fun langSetting(): String = settings.getString("lang", "es") ?: "es"
+
+    /** Loads the dictionary for the chosen language(s) if it isn't loaded yet. */
+    private fun ensureLanguage() {
+        val want = langSetting()
+        if (dict.loaded && dict.lang == want) return
+        worker.post {
+            try {
+                if (!(dict.loaded && dict.lang == want)) loadLanguage(want)
+            } catch (_: Exception) {
+            }
+            main.post {
+                kv?.spaceLabel = langLabel(want)
+                kv?.invalidate()
+                refreshSuggestions()
+            }
+        }
+    }
+
+    private fun loadLanguage(lang: String) {
+        val sources = ArrayList<Pair<java.io.InputStream, Int>>()
+        val ngrams = ArrayList<java.io.InputStream>()
+        when (lang) {
+            "en" -> { sources.add(Pair(assets.open("en.txt"), 0)); ngrams.add(assets.open("ngram_en.txt")) }
+            "es_en" -> {
+                sources.add(Pair(assets.open("es.txt"), 0)); sources.add(Pair(assets.open("en.txt"), -30))
+                ngrams.add(assets.open("ngram_es.txt")); ngrams.add(assets.open("ngram_en.txt"))
+            }
+            else -> { sources.add(Pair(assets.open("es.txt"), 0)); ngrams.add(assets.open("ngram_es.txt")) }
+        }
+        try {
+            dict.load(sources, ngrams, lang)
+        } finally {
+            sources.forEach { try { it.first.close() } catch (_: Exception) {} }
+            ngrams.forEach { try { it.close() } catch (_: Exception) {} }
+        }
+    }
+
+    private fun langLabel(lang: String) = when (lang) {
+        "en" -> "English"
+        "es_en" -> "Español · English"
+        else -> "Español"
+    }
     private var lastShiftTime = 0L
     private var selStart = 0
     private var selEnd = 0
@@ -78,13 +132,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         th.start()
         workerThread = th
         worker = Handler(th.looper)
-        worker.post {
-            try {
-                if (!dict.loaded) assets.open("es.txt").use { dict.load(it) }
-            } catch (_: Exception) {
-            }
-            main.post { refreshSuggestions() }
-        }
+        ensureLanguage()
         vibrator = if (Build.VERSION.SDK_INT >= 31) {
             getSystemService(VibratorManager::class.java)?.defaultVibrator
         } else {
@@ -124,6 +172,8 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         v.heightScale = when (settings.getInt("height", 1)) { 0 -> 0.88f; 2 -> 1.14f; else -> 1f }
         v.showHints = settings.getBoolean("hints", true)
         v.showFloatingXp = settings.getBoolean("floatxp", true)
+        v.spaceLabel = langLabel(langSetting())
+        if (::worker.isInitialized) ensureLanguage()
         vibrateOn = settings.getBoolean("vibrate", true)
         soundOn = settings.getBoolean("xpsound", true)
         if (soundOn) (sounds ?: SoundFx(this).also { sounds = it }).preload()
@@ -141,6 +191,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         autoSpace = false
         lastWordWasGlide = false
         prevWord = null
+        prevWord2 = null
         rawWordLen = 0
         selStart = info.initialSelStart
         selEnd = info.initialSelEnd
@@ -302,7 +353,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         if (composing.isNotEmpty()) {
             if (lastWordWasGlide) return  // glide alternatives already shown
             val snapshot = composing.toString()
-            val prev = prevWord
+            val prev = context()
             worker.removeCallbacksAndMessages(null)
             worker.post {
                 val r = dict.suggest(snapshot, prev)
@@ -317,7 +368,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         } else {
             sugFor = null
             sugResult = null
-            val p = dict.predict(prevWord)
+            val p = dict.predict(context())
             val cased = p.map { if ((kv?.shiftState ?: 0) > 0) it.replaceFirstChar { c -> c.uppercaseChar() } else it }
             slots = listOf(cased.getOrElse(1) { "" }, cased.getOrElse(0) { "" }, cased.getOrElse(2) { "" })
             v.setSuggestions(slots, -1)
@@ -339,7 +390,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val typed = composing.toString()
         if (sugFor == typed && sugResult != null) return sugResult
         if (!dict.loaded) return null
-        val r = dict.suggest(typed, prevWord)
+        val r = dict.suggest(typed, context())
         sugFor = typed
         sugResult = r
         return r
@@ -378,6 +429,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             dict.learnWord(word)
             prevWord?.let { dict.learnBigram(it, word) }
         }
+        prevWord2 = prevWord
         prevWord = word.lowercase()
         gainXp(word, kind)
     }
@@ -454,6 +506,13 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             return
         }
 
+        if (s == "'" && composing.isNotEmpty() && !lastWordWasGlide && dict.lang != "es") {
+            composing.append("'")
+            ic.setComposingText(composing, 1)
+            refreshSuggestions()
+            return
+        }
+
         if (isLetter) {
             if (lastWordWasGlide && composing.isNotEmpty()) {
                 commitWord(false)
@@ -483,7 +542,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             autoSpace = false
         }
         lastWordWasGlide = false
-        if (s == "." || s == "!" || s == "?") prevWord = null
+        if (s == "." || s == "!" || s == "?") { prevWord = null; prevWord2 = null }
         refreshSuggestions()
     }
 
@@ -509,6 +568,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
                 ic.deleteSurroundingText(1, 0)
                 ic.commitText(". ", 1)
                 prevWord = null
+                prevWord2 = null
             } else {
                 ic.commitText(" ", 1)
             }
@@ -593,6 +653,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         lastCorrection = null
         autoSpace = false
         prevWord = null
+        prevWord2 = null
         lastWordWasGlide = false
         val ei = currentInputEditorInfo
         val action = (ei?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
@@ -665,7 +726,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val centers = v.letterCenters()
         val kw = v.unitW
         val kh = v.keyRowH
-        val prev = prevWord
+        val prev = context()
         worker.removeCallbacksAndMessages(null)
         worker.post {
             val res = try { dict.glide(px, py, n, centers, kw, kh, prev) } catch (_: Exception) { emptyList() }
@@ -682,7 +743,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         worker.removeCallbacksAndMessages(null)
         if (!glidePrepared) prepareGlide()
         glidePrepared = false
-        val res = dict.glide(px, py, n, v.letterCenters(), v.unitW, v.keyRowH, prevWord)
+        val res = dict.glide(px, py, n, v.letterCenters(), v.unitW, v.keyRowH, context())
         if (res.isEmpty()) {
             // keep the live preview if there was one
             if (composing.isNotEmpty() && lastWordWasGlide) {
@@ -863,8 +924,13 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
+    /** Long-press on space: switch language (Español → English → Español · English). */
     override fun onSpaceLongPress() {
         vibrate(30)
-        getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+        val next = when (langSetting()) { "es" -> "en"; "en" -> "es_en"; else -> "es" }
+        settings.edit().putString("lang", next).apply()
+        kv?.spaceLabel = langLabel(next)
+        kv?.showBanner("🌐 ${langLabel(next)}", "Mantén la barra espaciadora para cambiar de idioma")
+        ensureLanguage()
     }
 }

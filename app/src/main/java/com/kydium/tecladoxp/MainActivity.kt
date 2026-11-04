@@ -565,6 +565,20 @@ class MainActivity : Activity() {
     private fun renderSettings() {
         val c = card()
         sectionTitle(c, "Ajustes")
+        c.addView(text("Idioma del teclado", 15f, textC).apply { setPadding(0, 0, 0, dpi(8f)) })
+        val lang = settings.getString("lang", "es")
+        val langRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("es" to "Español", "en" to "English", "es_en" to "Ambos").forEach { (id, label) ->
+            langRow.addView(button(label, id == lang) {
+                settings.edit().putString("lang", id).apply()
+                render()
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dpi(3f); rightMargin = dpi(3f)
+            })
+        }
+        c.addView(langRow)
+        c.addView(text("\"Ambos\" sirve si mezclas español e inglés: entiende los dos, pero corrige un poco menos.", 12f, muted)
+            .apply { setPadding(0, dpi(6f), 0, dpi(10f)) })
         switchRow(c, "Escritura deslizante", "Desliza el dedo por las letras para escribir", "glide", true)
         switchRow(c, "Autocorrector", "Corrige al presionar espacio (⌫ para deshacer)", "autocorrect", true)
         switchRow(c, "Vibración al tocar", "", "vibrate", true)
@@ -594,7 +608,7 @@ class MainActivity : Activity() {
             "• Mantén presionada una tecla para acentos, números y emojis (en la coma)\n" +
                 "• Desliza sobre la barra espaciadora para mover el cursor\n" +
                 "• Desliza a la izquierda desde ⌫ para borrar palabras\n" +
-                "• Mantén la barra espaciadora para cambiar de teclado\n" +
+                "• Mantén la barra espaciadora para cambiar de idioma\n" +
                 "• Toca ⇧ dos veces para bloquear mayúsculas\n" +
                 "• Toca tu nivel en el teclado para abrir esta pantalla",
             13f, muted

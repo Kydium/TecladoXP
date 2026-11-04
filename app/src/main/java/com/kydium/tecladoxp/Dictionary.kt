@@ -7,6 +7,7 @@ import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 class Suggestions(
     /** 3 slots: [left, center, right]. Empty string = nothing. */
@@ -45,26 +46,66 @@ class Dictionary(private val userDir: File?) {
 
     // ---------------------------------------------------------------- loading
 
+    /** Language(s) loaded: "es", "en" or "es_en". */
+    @Volatile var lang = ""
+        private set
+
+    // Base n-gram model shipped with the app (from subtitles + treebanks): context -> (total, words, counts)
+    private class Next(val total: Int, val words: Array<String>, val counts: IntArray)
+    private var ngrams: HashMap<String, Next> = HashMap()
+
     @Synchronized
-    fun load(input: InputStream) {
-        val w = ArrayList<String>(52000)
-        val f = ArrayList<Int>(52000)
-        input.bufferedReader(Charsets.UTF_8).useLines { lines ->
-            lines.forEach { line ->
-                val tab = line.indexOf('\t')
-                if (tab > 0) {
-                    w.add(line.substring(0, tab))
-                    f.add(line.substring(tab + 1).trim().toIntOrNull() ?: 300)
+    fun load(input: InputStream) = load(listOf(Pair(input, 0)), emptyList(), "es")
+
+    /**
+     * @param sources word lists ("word<TAB>zipf*100"), each with a frequency offset
+     *                (used to slightly prefer the main language in bilingual mode)
+     * @param ngramSources n-gram files ("ctx<TAB>total<TAB>w1 c1 w2 c2…")
+     */
+    @Synchronized
+    fun load(sources: List<Pair<InputStream, Int>>, ngramSources: List<InputStream>, language: String) {
+        val merged = LinkedHashMap<String, Int>(110000)
+        for ((input, offset) in sources) {
+            input.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                lines.forEach { line ->
+                    val tab = line.indexOf('\t')
+                    if (tab > 0) {
+                        val word = line.substring(0, tab)
+                        val fr = (line.substring(tab + 1).trim().toIntOrNull() ?: 300) + offset
+                        val old = merged[word]
+                        if (old == null || fr > old) merged[word] = fr
+                    }
                 }
             }
         }
+        val w = ArrayList<String>(merged.keys)
+        val f = ArrayList<Int>(merged.values)
+        val ng = HashMap<String, Next>(60000)
+        for (input in ngramSources) {
+            input.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                lines.forEach { line ->
+                    val p = line.split('\t')
+                    if (p.size == 3) {
+                        val t = p[2].split(' ')
+                        val n = t.size / 2
+                        val ws = Array(n) { t[it * 2] }
+                        val cs = IntArray(n) { t[it * 2 + 1].toIntOrNull() ?: 1 }
+                        val total = p[1].toIntOrNull() ?: 1
+                        val old = ng[p[0]]
+                        if (old == null) ng[p[0]] = Next(total, ws, cs)   // first language wins (main one)
+                    }
+                }
+            }
+        }
+        ngrams = ng
+        lang = language
         val n = w.size
         val wa = w.toTypedArray()
         val na = Array(n) { norm(wa[it]) }
         val ga = Array(n) { dedupe(glideNorm(wa[it])) }
         val fa = IntArray(n) { f[it] }
         val ex = HashMap<String, Int>(n * 2)
-        for (i in 0 until n) if (!ex.containsKey(wa[i])) ex[wa[i]] = i
+        for (i in 0 until n) { val k = wa[i].lowercase(); if (!ex.containsKey(k)) ex[k] = i }
         // "cancion" appears in web text, but "canción" is far more common: treat the
         // accent-less spelling as a typo so it gets corrected.
         val bestByNorm = HashMap<String, Int>(n * 2)
@@ -75,7 +116,7 @@ class Dictionary(private val userDir: File?) {
         for (i in 0 until n) {
             if (wa[i] != na[i]) continue
             val b = bestByNorm[na[i]] ?: continue
-            if (b != i && fa[b] >= fa[i] + 70) ex.remove(wa[i])
+            if (b != i && fa[b] >= fa[i] + 70) ex.remove(wa[i].lowercase())
         }
         val sorted = (0 until n).sortedWith(compareBy { na[it] }).toIntArray()
 
@@ -113,7 +154,7 @@ class Dictionary(private val userDir: File?) {
 
         fun norm(s: String): String {
             val sb = StringBuilder(s.length)
-            for (ch in s.lowercase()) sb.append(
+            for (ch in s.lowercase()) if (ch != '\'' && ch != '’') sb.append(
                 when (ch) {
                     'á', 'à', 'â', 'ä', 'ã' -> 'a'
                     'é', 'è', 'ê', 'ë' -> 'e'
@@ -131,7 +172,10 @@ class Dictionary(private val userDir: File?) {
         /** Like norm but keeps ñ (it's a real key for gliding). */
         fun glideNorm(s: String): String {
             val sb = StringBuilder(s.length)
-            for (ch in s.lowercase()) sb.append(if (ch == 'ñ') 'ñ' else norm(ch.toString())[0])
+            for (ch in s.lowercase()) {
+                if (ch == '\'' || ch == '’') continue
+                sb.append(if (ch == 'ñ') 'ñ' else norm(ch.toString())[0])
+            }
             return sb.toString()
         }
 
@@ -212,10 +256,26 @@ class Dictionary(private val userDir: File?) {
 
     // ---------------------------------------------------------------- suggestions
 
-    private fun bigramBoost(prev: String?, word: String): Float {
-        if (prev == null) return 0f
-        val c = bigrams[prev]?.get(word.lowercase()) ?: return 0f
-        return 0.9f * ln(1f + c)
+    /**
+     * Context bonus. [ctx] = the previous one or two words ("muchas", "te lo"), null at the
+     * start of a sentence. Mixes the built-in n-gram model with what the user has typed.
+     */
+    private fun bigramBoost(ctx: String?, word: String): Float {
+        val lw = word.lowercase()
+        var b = 0f
+        val last = ctx?.substringAfterLast(' ')
+        if (last != null) bigrams[last]?.get(lw)?.let { b += 0.9f * ln(1f + it) }
+        val key = ctx ?: "^"
+        var p = 0f
+        if (key.contains(' ')) ngrams[key]?.let { p = prob(it, lw) }
+        if (p == 0f) ngrams[key.substringAfterLast(' ')]?.let { p = prob(it, lw) * 0.8f }
+        if (p > 0f) b += 4.0f * sqrt(p)
+        return b
+    }
+
+    private fun prob(n: Next, w: String): Float {
+        for (i in n.words.indices) if (n.words[i] == w) return n.counts[i].toFloat() / n.total
+        return 0f
     }
 
     private fun prefixRange(p: String): IntRange {
@@ -318,20 +378,39 @@ class Dictionary(private val userDir: File?) {
         val ranked = all.entries.sortedByDescending { it.value }.map { it.key }
             .filter { it != auto }
 
-        val slots: List<String> = if (auto != null) {
-            listOf(typed, auto, ranked.getOrElse(0) { "" })
-        } else {
-            listOf(ranked.getOrElse(0) { "" }, typed, ranked.getOrElse(1) { "" })
+        // "i" -> "I", "im" handled above; a valid word whose dictionary spelling differs only in case
+        if (auto == null && typedValid) {
+            val disp = exact[lw]?.let { words[it] }
+            if (disp != null && disp != typed && disp.lowercase() == lw && disp != lw) auto = disp
+        }
+        val slots: List<String> = when {
+            auto != null -> listOf(typed, auto, ranked.getOrElse(0) { "" })
+            // not a word and nothing to correct: the best completion goes in the middle
+            !typedValid && ranked.isNotEmpty() -> listOf(typed, ranked[0], ranked.getOrElse(1) { "" })
+            else -> listOf(ranked.getOrElse(0) { "" }, typed, ranked.getOrElse(1) { "" })
         }
         return Suggestions(slots, auto, typedValid)
     }
 
     /** Next-word predictions from what the user has typed before. */
     @Synchronized
-    fun predict(prev: String?): List<String> {
-        if (prev == null) return emptyList()
-        val m = bigrams[prev] ?: return emptyList()
-        return m.entries.sortedByDescending { it.value }.take(3).map { it.key }
+    fun predict(ctx: String?): List<String> {
+        val scores = HashMap<String, Float>()
+        fun add(n: Next?, weight: Float) {
+            n ?: return
+            for (i in n.words.indices) {
+                val w = n.words[i]
+                scores[w] = (scores[w] ?: 0f) + weight * sqrt(n.counts[i].toFloat() / n.total)
+            }
+        }
+        val key = ctx ?: "^"
+        if (key.contains(' ')) add(ngrams[key], 3f)
+        add(ngrams[key.substringAfterLast(' ')], 2f)
+        val last = ctx?.substringAfterLast(' ')
+        if (last != null) bigrams[last]?.forEach { (w, c) -> scores[w] = (scores[w] ?: 0f) + 1.1f * ln(1f + c) }
+        return scores.entries.filter { !blocked(it.key) }
+            .sortedByDescending { it.value }.take(3)
+            .map { e -> exact[e.key]?.let { words[it] } ?: e.key }
     }
 
     // ---------------------------------------------------------------- glide
@@ -490,7 +569,7 @@ class Dictionary(private val userDir: File?) {
     @Synchronized
     fun learnWord(word: String) {
         val lw = word.lowercase()
-        if (lw.isEmpty() || !lw.all { it.isLetter() }) return
+        if (lw.isEmpty() || !lw.all { it.isLetter() || it == '\'' }) return
         if (lw.length < 2 && !exact.containsKey(lw)) return
         userWords[lw] = (userWords[lw] ?: 0) + 1
         if (userWords.size > 8000) {
@@ -504,7 +583,7 @@ class Dictionary(private val userDir: File?) {
     @Synchronized
     fun forceLearn(word: String) {
         val lw = word.lowercase()
-        if (lw.length < 2 || !lw.all { it.isLetter() }) return
+        if (lw.length < 2 || !lw.all { it.isLetter() || it == '\'' }) return
         userWords[lw] = maxOf(2, (userWords[lw] ?: 0) + 1)
         dirty = true
     }
@@ -578,7 +657,7 @@ class Dictionary(private val userDir: File?) {
     @Synchronized
     fun addWord(word: String): Boolean {
         val lw = word.trim().lowercase()
-        if (lw.length < 2 || !lw.all { it.isLetter() }) return false
+        if (lw.length < 2 || !lw.all { it.isLetter() || it == '\'' }) return false
         userWords[lw] = maxOf(6, userWords[lw] ?: 0)
         dirty = true
         saveAsync()
