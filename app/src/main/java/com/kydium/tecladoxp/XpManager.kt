@@ -99,7 +99,9 @@ object XpManager {
     )
 
     /** Total XP needed to reach [rank]. From rank 100 on, GTA's formula: 25x² + 23575x − 1023150. */
-    fun totalFor(rank: Int): Long = when {
+    fun totalFor(rank: Int): Long = gtaTotal(rank) / 4   // GTA's curve divided by 4
+
+    private fun gtaTotal(rank: Int): Long = when {
         rank <= 1 -> 0L
         rank <= 100 -> GTA_TOTAL[rank - 1]
         else -> 25L * rank * rank + 23575L * rank - 1023150L
