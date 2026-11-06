@@ -517,7 +517,18 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     /** Key centers (pixels) of the letters layout, keyed by lowercase letter. */
+    /** Key centers (pixels) moved toward where you usually press (see [TouchModel]). */
     fun letterCenters(): Map<Char, FloatArray> {
+        val m = HashMap<Char, FloatArray>()
+        for (k in letters.allKeys) if (k.isLetter) {
+            val o = TouchModel.offset(k.label[0])
+            m[k.label[0]] = if (o == null) floatArrayOf(k.cx, k.cy) else floatArrayOf(k.cx + o[0] * unitW, k.cy + o[1] * rowH)
+        }
+        return m
+    }
+
+    /** Real (unshifted) key centers in pixels. */
+    fun rawLetterCenters(): Map<Char, FloatArray> {
         val m = HashMap<Char, FloatArray>()
         for (k in letters.allKeys) if (k.isLetter) m[k.label[0]] = floatArrayOf(k.cx, k.cy)
         return m
@@ -1030,6 +1041,24 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun keyAt(x: Float, y: Float): Key? {
         if (y < topH) return null
+        if (!emojiMode && layout === letters) {
+            // adaptive hit areas: special keys keep their rectangles; letters go to the
+            // nearest *learned* center (where you usually press that key)
+            for (k in layout.allKeys) if (!k.isLetter && k.contains(x, y)) return k
+            var bestL: Key? = null
+            var bdL = Float.MAX_VALUE
+            for (k in layout.allKeys) {
+                if (!k.isLetter) continue
+                val o = TouchModel.offset(k.label[0])
+                val cx = k.cx + (o?.get(0) ?: 0f) * unitW
+                val cy = k.cy + (o?.get(1) ?: 0f) * rowH
+                val ddx = (x - cx) / unitW
+                val ddy = (y - cy) / rowH
+                val d = ddx * ddx + ddy * ddy
+                if (d < bdL) { bdL = d; bestL = k }
+            }
+            if (bestL != null && bdL < 1.2f) return bestL
+        }
         var best: Key? = null
         var bd = Float.MAX_VALUE
         for (k in (if (emojiMode) emojiBar else layout.allKeys)) {

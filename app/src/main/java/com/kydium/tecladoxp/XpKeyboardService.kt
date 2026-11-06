@@ -139,6 +139,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onCreate() {
         super.onCreate()
         XpManager.init(this)
+        TouchModel.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
         dict = Dictionary.get(filesDir)
         val th = HandlerThread("tecladoxp-dict")
@@ -268,6 +269,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onFinishInputView(finishingInput)
         cancelVoice()
         flushXp()
+        TouchModel.save()
         composing.setLength(0)
         lastCorrection = null
         dict.saveAsync()
@@ -472,6 +474,16 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             }
         }
         ic.commitText(final, 1)
+        // kept exactly as typed with the keys: teach the touch model where you press
+        if (final == typed && kind == WordKind.TYPED) {
+            val v = kv
+            val t = tapsFor(typed)
+            if (v != null && t != null && v.unitW > 0f) {
+                val raw = HashMap<Char, FloatArray>()
+                for ((k, c) in v.rawLetterCenters()) raw[k] = floatArrayOf(c[0] / v.unitW, c[1] / v.keyRowH)
+                TouchModel.learn(typed, t, raw)
+            }
+        }
         composing.setLength(0)
         lastWordWasGlide = false
         afterWordCommitted(final, kind)

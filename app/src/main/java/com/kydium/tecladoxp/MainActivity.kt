@@ -674,6 +674,24 @@ class MainActivity : Activity() {
         })
         c.addView(row)
 
+        TouchModel.init(this)
+        val touchRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpi(14f), 0, dpi(2f))
+        }
+        val tk = TouchModel.learnedKeys
+        touchRow.addView(text(
+            if (tk == 0) "👆 Aún aprendiendo dónde tocas cada tecla"
+            else "👆 Teclas ajustadas a tu forma de tocar: $tk",
+            13f, textC
+        ), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (tk > 0) touchRow.addView(button("Reiniciar", false) {
+            TouchModel.reset()
+            render()
+        })
+        c.addView(touchRow)
+
         val shown = if (showAllWords) words else words.take(30)
         var line: LinearLayout? = null
         shown.forEachIndexed { i, w ->

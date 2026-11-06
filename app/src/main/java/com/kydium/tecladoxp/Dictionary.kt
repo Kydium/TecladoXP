@@ -140,6 +140,14 @@ class Dictionary(private val userDir: File?) {
     companion object {
         @Volatile private var shared: Dictionary? = null
 
+        // glide scoring weights (tuned on simulated finger paths)
+        var gFreq = 1.5f
+        var gLoc = 6.5f
+        var gMiss = 3f
+        var gLen = 6f
+        var gEnds = 4f
+        var gPass = 1.25f
+
         /** One dictionary per app process, shared by the keyboard and the settings screen. */
         fun get(dir: File): Dictionary = shared ?: synchronized(this) {
             shared ?: Dictionary(dir).also { shared = it }
@@ -526,15 +534,20 @@ class Dictionary(private val userDir: File?) {
             val miss = keyMiss(gp, cx)
             // ideal path much longer than what the finger drew = extra detours the user didn't make
             val lenRatio = if (userLen > 0.3f) max(0f, idealLen(gp, cx) / userLen - 1.1f) else 0f
-            val s = freq * 0.55f - loc * 6.5f - miss * 3f - min(lenRatio, 1.5f) * 6f - (sd + ed) * 1.2f +
+            val s = freq * gFreq - loc * gLoc - miss * gMiss - min(lenRatio, 1.5f) * gLen - (sd + ed) * gEnds +
                 bigramBoost(prev, display) + userBoost(display)
             val old = scores[display]
             if (old == null || s > old) scores[display] = s
         }
 
-        for ((s, sd) in starts) for ((e, ed) in ends) {
-            val bucket = glideBuckets[bucketKey(s, e)] ?: continue
-            for (idx in bucket) consider(gpaths[idx], words[idx], freqs[idx] / 100f, sd, ed)
+        // try with the normal tolerance; if nothing fits (sloppy swipe), widen it
+        for (radius in floatArrayOf(gPass, gPass + 0.35f, gPass + 0.75f)) {
+            passRadius = radius
+            for ((s, sd) in starts) for ((e, ed) in ends) {
+                val bucket = glideBuckets[bucketKey(s, e)] ?: continue
+                for (idx in bucket) consider(gpaths[idx], words[idx], freqs[idx] / 100f, sd, ed)
+            }
+            if (scores.isNotEmpty()) break
         }
         for ((w, c) in userWords) {
             if (c < 2 || exact.containsKey(w)) continue
@@ -572,6 +585,8 @@ class Dictionary(private val userDir: File?) {
         return total
     }
 
+    private var passRadius = 1.05f
+
     /** Every letter's key must be near the path, in order. */
     private fun passes(gp: String, cx: Map<Char, FloatArray>): Boolean {
         var j = 0
@@ -579,7 +594,7 @@ class Dictionary(private val userDir: File?) {
             val k = cx[ch] ?: return false
             var found = false
             while (j < N) {
-                if (hypot(ux[j] - k[0], uy[j] - k[1]) < 1.05f) { found = true; break }
+                if (hypot(ux[j] - k[0], uy[j] - k[1]) < passRadius) { found = true; break }
                 j++
             }
             if (!found) return false
