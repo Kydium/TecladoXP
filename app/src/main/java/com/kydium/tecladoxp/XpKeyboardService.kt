@@ -399,7 +399,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     /** XP is collected while you type and added all at once after a short pause. */
     private val flushXpRunnable = Runnable { flushXp() }
-    private val xpPauseMs = 2000L
+    private val xpPauseMs = 1000L
 
     private fun gainXp(word: String, kind: WordKind) {
         val letters = word.count { it.isLetter() }
