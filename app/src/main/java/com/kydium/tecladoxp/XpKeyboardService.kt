@@ -254,6 +254,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         cancelVoice()
+        flushXp()
         composing.setLength(0)
         lastCorrection = null
         dict.saveAsync()
@@ -396,25 +397,32 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         return r
     }
 
+    /** XP is collected while you type and added all at once after a short pause. */
+    private val flushXpRunnable = Runnable { flushXp() }
+    private val xpPauseMs = 2000L
+
     private fun gainXp(word: String, kind: WordKind) {
         val letters = word.count { it.isLetter() }
         if (letters == 0 || noLearn) return
-        val before = XpManager.level()
-        val r = XpManager.onWord(letters, kind)
-        val v = kv ?: return
+        XpManager.onWord(letters, kind)
+        kv?.setPendingXp(XpManager.pendingXp)
+        main.removeCallbacks(flushXpRunnable)
+        main.postDelayed(flushXpRunnable, xpPauseMs)
+    }
+
+    private fun flushXp() {
+        main.removeCallbacks(flushXpRunnable)
+        val r = XpManager.flush() ?: return
+        val v = kv
+        v?.setPendingXp(0)
+        if (v == null) return
         v.addFloatingXp(r.gained)
         if (soundOn) {
             val sfx = sounds ?: SoundFx(this).also { sounds = it }
             if (r.leveledUp) sfx.playLevelUp() else sfx.playOrb()
         }
         if (r.leveledUp) {
-            val range = (before + 1)..r.level
-            val unlocks = ArrayList<String>()
-            Themes.all.filter { it.unlockLevel in range }.forEach { unlocks.add("tema ${it.name}") }
-            TrailStyles.all.filter { it.unlockLevel in range }.forEach { unlocks.add("estela ${it.name}") }
-            XpBarStyles.all.filter { it.unlockLevel in range }.forEach { unlocks.add("barra ${it.name}") }
-            val extra = if (unlocks.isNotEmpty()) "Nuevo: " + unlocks.joinToString(", ") else ""
-            v.showLevelUp(r.level, XpManager.titleFor(r.level), extra)
+            v.showLevelUp(r.level, XpManager.titleFor(r.level), "")
             vibrate(60)
         }
         if (r.dailyBonus > 0) {

@@ -71,7 +71,7 @@ object XpManager {
         if (prefs != null) return
         val p = ctx.applicationContext.getSharedPreferences("xp", Context.MODE_PRIVATE)
         prefs = p
-        totalXp = p.getLong("totalXp", 0)
+        totalXp = p.getLong("totalXp", 0) + p.getLong("pendingXp", 0)
         totalWords = p.getLong("totalWords", 0)
         totalChars = p.getLong("totalChars", 0)
         glideWords = p.getLong("glideWords", 0)
@@ -146,12 +146,15 @@ object XpManager {
     fun isUnlocked(id: String) = unlocked.contains(id)
 
     // ---------- Events ----------
-    fun onWord(len: Int, kind: WordKind, now: Long = System.currentTimeMillis()): XpResult {
-        val levelBefore = level()
+    /** XP earned while typing that hasn't been added to the total yet (see [flush]). */
+    var pendingXp = 0L; private set
+    private var pendingDaily = 0
 
+    /** Counts a word and returns the XP it earned. The XP waits in [pendingXp] until [flush]. */
+    fun onWord(len: Int, kind: WordKind, now: Long = System.currentTimeMillis()): Int {
         // daily streak
-        var daily = 0
         val today = LocalDate.now().toEpochDay()
+        var daily = 0
         if (today != lastDay) {
             streakDays = if (lastDay == today - 1) streakDays + 1 else 1
             lastDay = today
@@ -165,7 +168,6 @@ object XpManager {
         lastWordAt = now
         bestCombo = max(bestCombo, combo)
 
-        // base xp
         var base = len + 2
         when (kind) {
             WordKind.GLIDE -> { base += 3; glideWords++ }
@@ -173,13 +175,25 @@ object XpManager {
             WordKind.AUTOCORRECT -> { base += 1; corrections++ }
             WordKind.TYPED -> {}
         }
-        var gained = (base * comboMultiplier()).toInt() + daily
-
+        val gained = (base * comboMultiplier()).toInt() + daily
         totalWords++
         totalChars += len
         wordsToday++
+        pendingXp += gained
+        pendingDaily += daily
+        save()
+        return gained
+    }
 
-        totalXp += gained
+    /** Adds all pending XP to the total at once (called after a pause in typing). */
+    fun flush(): XpResult? {
+        if (pendingXp <= 0) return null
+        val levelBefore = level()
+        var gained = pendingXp
+        totalXp += pendingXp
+        val daily = pendingDaily
+        pendingXp = 0
+        pendingDaily = 0
 
         // achievements (may cascade through level achievements)
         val newAch = ArrayList<Achievement>()
@@ -197,16 +211,15 @@ object XpManager {
             }
         }
         xpToday += gained
-
         val levelAfter = level()
         save()
-        return XpResult(gained, levelAfter > levelBefore, levelAfter, combo, daily, newAch)
+        return XpResult(gained.toInt(), levelAfter > levelBefore, levelAfter, combo, daily, newAch)
     }
 
     fun resetAll() {
         totalXp = 0; totalWords = 0; totalChars = 0; glideWords = 0; corrections = 0
         suggestionsUsed = 0; bestCombo = 0; streakDays = 0; lastDay = 0; wordsToday = 0
-        xpToday = 0; combo = 0; lastWordAt = 0
+        xpToday = 0; combo = 0; lastWordAt = 0; pendingXp = 0; pendingDaily = 0
         unlocked.clear()
         save()
     }
@@ -215,6 +228,7 @@ object XpManager {
         val p = prefs ?: return
         p.edit()
             .putLong("totalXp", totalXp)
+            .putLong("pendingXp", pendingXp)
             .putLong("totalWords", totalWords)
             .putLong("totalChars", totalChars)
             .putLong("glideWords", glideWords)

@@ -79,6 +79,13 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var xpLine = ""
     private var combo = 0
     private var streak = 0
+    private var pendingXp = 0L
+
+    /** XP earned while typing that hasn't been added to the bar yet. */
+    fun setPendingXp(v: Long) {
+        pendingXp = v
+        invalidate()
+    }
     private var comboExpire = 0L
     // xp gain animation: the earned part turns white, then fills with color
     private var animFrom = 0f
@@ -203,9 +210,21 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         cats.add(Pair("🕘", recents))
         try {
             context.assets.open("emojis.txt").bufferedReader(Charsets.UTF_8).useLines { lines ->
+                val probe = Paint()
                 lines.forEach { line ->
                     val parts = line.split('\t')
-                    if (parts.size > 1) cats.add(Pair(parts[0], parts.drop(1).filter { it.isNotEmpty() }))
+                    if (parts.size > 1) {
+                        val list = ArrayList<String>()
+                        for (tok in parts.drop(1)) {
+                            if (tok.isEmpty()) continue
+                            // "base|tone1|tone2…": keep only what this phone's font can draw
+                            val vars = tok.split('|').filter { probe.hasGlyph(it) }
+                            if (vars.isEmpty()) continue
+                            list.add(vars[0])
+                            if (vars.size > 1) emojiVariants[vars[0]] = vars
+                        }
+                        cats.add(Pair(parts[0], list))
+                    }
                 }
             }
         } catch (_: Exception) {
@@ -214,6 +233,27 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         recents.clear()
         recents.addAll(saved.split('\t').filter { it.isNotEmpty() })
         emojiCats = cats
+    }
+
+    /** Skin-tone variants for emojis that have them (base -> [base, tones…]). */
+    private val emojiVariants = HashMap<String, List<String>>()
+
+    /** Long-press on an emoji with skin tones opens a popup to pick one. */
+    private val emojiLongPress = Runnable {
+        if (mode != Mode.EMOJI || emojiScrolled) return@Runnable
+        val e = emojiAt(downX, downY) ?: return@Runnable
+        val vars = emojiVariants[e] ?: return@Runnable
+        val cellW = width / emojiCols.toFloat()
+        val col = (downX / cellW).toInt().coerceIn(0, emojiCols - 1)
+        val row = ((downY - emojiGridTop + emojiScroll) / emojiCellH).toInt()
+        val k = Key(e, -100, 1f, vars)
+        k.left = col * cellW
+        k.right = k.left + cellW
+        k.top = emojiGridTop + row * emojiCellH - emojiScroll
+        k.bottom = k.top + emojiCellH
+        openPopup(k)
+        listener.onPressFeedback()
+        invalidate()
     }
 
     private fun addRecent(e: String) {
@@ -582,6 +622,14 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             val cy2 = bcy + dp(5f)
             renderer.drawBar(c, xpStyle, t, bl, br, cy2, blue, level, if (animating) animTo else blue, whiteAlpha)
             val lvlAnim = drawAnimatedBadge(c, t, w / 2f, cy2 - dp(11f), r, blue, pressedRow, now)
+            if (pendingXp > 0) {
+                textPaint.typeface = Typeface.DEFAULT_BOLD
+                textPaint.textSize = sp(12f)
+                textPaint.textAlign = Paint.Align.RIGHT
+                textPaint.color = Color.parseColor("#80FF20")
+                c.drawText("+$pendingXp", br, cy2 - dp(8f), textPaint)
+                textPaint.textAlign = Paint.Align.CENTER
+            }
             if (animating || lvlAnim) postInvalidateOnAnimation()
             textPaint.typeface = Typeface.DEFAULT
             return
@@ -600,13 +648,20 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         textPaint.textSize = sp(11f)
         textPaint.color = t.text
         c.drawText(xpLine, (barL + textR) / 2f, ty, textPaint)
+        if (pendingXp > 0) {
+            // XP earned in this burst of typing, added to the bar when you pause
+            textPaint.textAlign = Paint.Align.RIGHT
+            textPaint.color = t.accent2
+            c.drawText("+$pendingXp", textR, ty, textPaint)
+            textPaint.textAlign = Paint.Align.CENTER
+        }
         if (combo >= 5 && now < comboExpire) {
             val label = "⚡x" + String.format("%.1f", XpManager.comboMultiplier(combo))
             val pulse = 1f + 0.08f * sin(now / 120.0).toFloat()
             textPaint.textSize = sp(11f) * pulse
             textPaint.color = t.accent
-            textPaint.textAlign = Paint.Align.RIGHT
-            c.drawText(label, textR, ty, textPaint)
+            textPaint.textAlign = Paint.Align.LEFT
+            c.drawText(label, barL, ty, textPaint)
             textPaint.textAlign = Paint.Align.CENTER
             postInvalidateDelayed(60)
         } else if (combo >= 5 && now - comboExpire < 200) {
@@ -1102,6 +1157,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             emojiScrolled = false
             lastMoveY = y
             lastMoveT = SystemClock.uptimeMillis()
+            removeCallbacks(emojiLongPress)
+            postDelayed(emojiLongPress, 380)
             return
         }
         val k = keyAt(x, y)
@@ -1188,7 +1245,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 if (abs(y - downY) > topH) { stripPressed = -1; invalidate() }
             }
             Mode.EMOJI -> {
-                if (abs(y - downY) > dp(8f)) emojiScrolled = true
+                if (abs(y - downY) > dp(8f)) { emojiScrolled = true; removeCallbacks(emojiLongPress) }
                 if (emojiScrolled) {
                     val now = SystemClock.uptimeMillis()
                     val dy = y - lastMoveY
@@ -1205,6 +1262,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun up(x: Float, y: Float) {
+        removeCallbacks(emojiLongPress)
         removeCallbacks(longPress)
         removeCallbacks(repeatDel)
         when (mode) {
@@ -1214,7 +1272,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 gCount = 0
             }
             Mode.POPUP -> {
-                if (popupSel in popupAlts.indices) listener.onAltText(popupAlts[popupSel])
+                if (popupSel in popupAlts.indices) {
+                    listener.onAltText(popupAlts[popupSel])
+                    if (emojiMode) addRecent(popupAlts[popupSel])
+                }
                 gCount = 0
             }
             Mode.GLIDE -> {
