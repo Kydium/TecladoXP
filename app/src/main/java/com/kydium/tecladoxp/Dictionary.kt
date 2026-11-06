@@ -42,6 +42,15 @@ class Dictionary(private val userDir: File?) {
     private val userWords = HashMap<String, Int>()
     private var userLoaded = false
     private val bigrams = HashMap<String, HashMap<String, Int>>()
+
+    /**
+     * Your own swipe shapes: for words you swiped and kept, the path you drew
+     * (resampled to N points, in key units). A new swipe that looks like one of
+     * these gets a big bonus for that word — it learns *your* way of swiping.
+     */
+    private val templates = LinkedHashMap<String, ArrayList<FloatArray>>()
+    private val maxTemplateWords = 400
+    private val templatesPerWord = 3
     @Volatile private var dirty = false
 
     // ---------------------------------------------------------------- loading
@@ -147,6 +156,8 @@ class Dictionary(private val userDir: File?) {
         var gLen = 6f
         var gEnds = 4f
         var gPass = 1.25f
+        var tRadius = 0.6f
+        var tScale = 14f
 
         /** One dictionary per app process, shared by the keyboard and the settings screen. */
         fun get(dir: File): Dictionary = shared ?: synchronized(this) {
@@ -514,6 +525,18 @@ class Dictionary(private val userDir: File?) {
         val nx = FloatArray(cnt) { px[it] / kw }
         val ny = FloatArray(cnt) { py[it] / kh }
         resample(nx, ny, cnt, ux, uy)
+        // personal shapes: how close is this swipe to ones you made before?
+        val personal = HashMap<String, Float>()
+        for ((w, list) in templates) {
+            var best = Float.MAX_VALUE
+            for (t in list) {
+                var sum = 0f
+                for (i in 0 until N) sum += hypot(ux[i] - t[i * 2], uy[i] - t[i * 2 + 1])
+                val d = sum / N
+                if (d < best) best = d
+            }
+            if (best < tRadius) personal[w] = (tRadius - best) * tScale
+        }
         val cx = HashMap<Char, FloatArray>()
         for ((k, v) in centers) cx[k] = floatArrayOf(v[0] / kw, v[1] / kh)
 
@@ -528,14 +551,16 @@ class Dictionary(private val userDir: File?) {
         val scores = HashMap<String, Float>()
 
         fun consider(gp: String, display: String, freq: Float, sd: Float, ed: Float) {
-            if (blocked(display) || !passes(gp, cx)) return
+            if (blocked(display)) return
+            val bonus = personal[display.lowercase()] ?: 0f
+            if (bonus <= 0f && !passes(gp, cx)) return
             val loc = shapeDist(gp, cx)
-            if (loc > 1.0f) return
+            if (loc > 1.0f && bonus <= 0f) return
             val miss = keyMiss(gp, cx)
             // ideal path much longer than what the finger drew = extra detours the user didn't make
             val lenRatio = if (userLen > 0.3f) max(0f, idealLen(gp, cx) / userLen - 1.1f) else 0f
             val s = freq * gFreq - loc * gLoc - miss * gMiss - min(lenRatio, 1.5f) * gLen - (sd + ed) * gEnds +
-                bigramBoost(prev, display) + userBoost(display)
+                bigramBoost(prev, display) + userBoost(display) + bonus
             val old = scores[display]
             if (old == null || s > old) scores[display] = s
         }
@@ -556,6 +581,14 @@ class Dictionary(private val userDir: File?) {
             val sd = starts.firstOrNull { it.first == gp[0] }?.second ?: continue
             val ed = ends.firstOrNull { it.first == gp[gp.length - 1] }?.second ?: continue
             consider(gp, w, 4.5f + ln(1f + c), sd, ed)
+        }
+        // words you swiped this way before, even if the generic matcher missed them
+        for ((w, b) in personal) {
+            val display = exact[w]?.let { words[it] } ?: w
+            if (!scores.containsKey(display)) {
+                val f = exact[w]?.let { freqs[it] / 100f } ?: 4.5f
+                scores[display] = f * gFreq + b - 3f + bigramBoost(prev, display)
+            }
         }
         return scores.entries.sortedByDescending { it.value }.take(4).map { it.key }
     }
@@ -665,6 +698,14 @@ class Dictionary(private val userDir: File?) {
                 val t = line.split('\t')
                 if (t.size == 2) userWords[t[0]] = t[1].toIntOrNull() ?: 1
             }
+            val tf = File(dir, "glide_shapes.txt")
+            if (tf.exists()) tf.forEachLine { line ->
+                val tab = line.indexOf('\t')
+                if (tab > 0) {
+                    val vals = line.substring(tab + 1).split(',').mapNotNull { it.toFloatOrNull() }
+                    if (vals.size == N * 2) templates.getOrPut(line.substring(0, tab)) { ArrayList() }.add(vals.toFloatArray())
+                }
+            }
             val bf = File(dir, "bigrams.txt")
             if (bf.exists()) bf.forEachLine { line ->
                 val t = line.split('\t')
@@ -682,15 +723,44 @@ class Dictionary(private val userDir: File?) {
         val uw = HashMap(userWords)
         val bg = HashMap<String, Map<String, Int>>()
         for ((k, v) in bigrams) bg[k] = HashMap(v)
+        val tp = ArrayList<Pair<String, FloatArray>>()
+        for ((w, list) in templates) for (t in list) tp.add(Pair(w, t.copyOf()))
         Thread {
             try {
                 File(dir, "user_words.txt").writeText(uw.entries.joinToString("\n") { "${it.key}\t${it.value}" })
                 val sb = StringBuilder()
                 for ((p, m) in bg) for ((n, c) in m) sb.append(p).append('\t').append(n).append('\t').append(c).append('\n')
                 File(dir, "bigrams.txt").writeText(sb.toString())
+                val ts = StringBuilder()
+                for ((w, t) in tp) {
+                    ts.append(w).append('\t')
+                    for (i in t.indices) { if (i > 0) ts.append(','); ts.append(String.format(java.util.Locale.US, "%.2f", t[i])) }
+                    ts.append('\n')
+                }
+                File(dir, "glide_shapes.txt").writeText(ts.toString())
             } catch (_: Exception) {
             }
         }.start()
+    }
+
+    /** Remember the shape you drew for [word] (call when you keep a swiped word). */
+    @Synchronized
+    fun learnGlide(word: String, px: FloatArray, py: FloatArray, cnt: Int, kw: Float, kh: Float) {
+        val lw = word.lowercase()
+        if (cnt < 2 || lw.length < 2 || kw <= 0f || kh <= 0f) return
+        val nx = FloatArray(cnt) { px[it] / kw }
+        val ny = FloatArray(cnt) { py[it] / kh }
+        val ox = FloatArray(N)
+        val oy = FloatArray(N)
+        resample(nx, ny, cnt, ox, oy)
+        val t = FloatArray(N * 2)
+        for (i in 0 until N) { t[i * 2] = ox[i]; t[i * 2 + 1] = oy[i] }
+        val list = templates.remove(lw) ?: ArrayList()
+        list.add(t)
+        while (list.size > templatesPerWord) list.removeAt(0)
+        templates[lw] = list                     // most recent at the end
+        while (templates.size > maxTemplateWords) templates.remove(templates.keys.first())
+        dirty = true
     }
 
     @Synchronized
@@ -725,9 +795,13 @@ class Dictionary(private val userDir: File?) {
     fun clearLearning() {
         userWords.clear()
         bigrams.clear()
+        templates.clear()
         dirty = true
         saveAsync()
     }
+
+    val learnedShapes: Int
+        @Synchronized get() = templates.size
 
     val learnedCount: Int
         @Synchronized get() = userWords.count { it.value >= 2 && !exact.containsKey(it.key) }

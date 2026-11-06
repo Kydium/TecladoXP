@@ -465,6 +465,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val typed = composing.toString()
         var final = typed
         var kind = if (lastWordWasGlide) WordKind.GLIDE else WordKind.TYPED
+        if (lastWordWasGlide) learnLastGlide(typed)
         if (applyCorrection && !lastWordWasGlide && correctionAllowed()) {
             val s = currentSuggestions()
             val ac = s?.autoCorrect
@@ -643,6 +644,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         if (composing.isNotEmpty()) {
             if (lastWordWasGlide) {
                 composing.setLength(0)
+                lastGlideX = null; lastGlideY = null
             } else {
                 val cp = Character.charCount(composing.codePointBefore(composing.length))
                 composing.setLength(composing.length - cp)
@@ -728,6 +730,18 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     // ---- glide (swipe) typing: live preview while the finger moves, final word on release
     private var glidePrepared = false
+    // last swipe (pixels) so it can be learned if you keep the word
+    private var lastGlideX: FloatArray? = null
+    private var lastGlideY: FloatArray? = null
+
+    private fun learnLastGlide(word: String) {
+        val x = lastGlideX ?: return
+        val y = lastGlideY ?: return
+        val v = kv ?: return
+        lastGlideX = null; lastGlideY = null
+        if (noLearn) return
+        dict.learnGlide(word, x, y, x.size, v.unitW, v.keyRowH)
+    }
     private var glideSeq = 0
 
     /** Commit whatever was being typed and put a space before the new glided word. */
@@ -787,6 +801,8 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         worker.removeCallbacksAndMessages(null)
         if (!glidePrepared) prepareGlide()
         glidePrepared = false
+        lastGlideX = px.copyOf(n)
+        lastGlideY = py.copyOf(n)
         val res = dict.glide(px, py, n, v.letterCenters(), v.unitW, v.keyRowH, context())
         if (res.isEmpty()) {
             // keep the live preview if there was one
@@ -805,6 +821,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         lastCorrection = null
         if (composing.isNotEmpty()) {
             val typed = composing.toString()
+            if (lastWordWasGlide) learnLastGlide(word)
             val kind = when {
                 lastWordWasGlide -> WordKind.GLIDE
                 word == typed -> WordKind.TYPED

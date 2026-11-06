@@ -682,8 +682,9 @@ class MainActivity : Activity() {
         }
         val tk = TouchModel.learnedKeys
         touchRow.addView(text(
-            if (tk == 0) "👆 Aún aprendiendo dónde tocas cada tecla"
-            else "👆 Teclas ajustadas a tu forma de tocar: $tk",
+            (if (tk == 0) "👆 Aún aprendiendo dónde tocas cada tecla"
+            else "👆 Teclas ajustadas a tu forma de tocar: $tk") +
+                "\n〰️ Formas de deslizar aprendidas: ${dict.learnedShapes}",
             13f, textC
         ), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         if (tk > 0) touchRow.addView(button("Reiniciar", false) {
