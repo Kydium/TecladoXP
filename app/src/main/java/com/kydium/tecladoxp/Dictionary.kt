@@ -228,6 +228,35 @@ class Dictionary(private val userDir: File?) {
 
     private fun subCost(a: Char, b: Char): Float = if (near(a, b)) 0.6f else 1f
 
+    /**
+     * Spatial model (like Gboard's): for each typed letter we know where the finger landed,
+     * so swapping it for a key the finger almost touched is cheap and for a far key expensive.
+     * tapCost[i][c] = cost of reading typed position i as letter c.
+     */
+    private var tapCost: Array<HashMap<Char, Float>?>? = null
+
+    private fun buildTapCosts(taps: List<FloatArray?>?, centers: Map<Char, FloatArray>?, n: Int) {
+        tapCost = null
+        if (taps == null || centers == null || taps.size != n) return
+        tapCost = Array(n) { i ->
+            val t = taps[i] ?: return@Array null
+            val m = HashMap<Char, Float>(32)
+            for ((ch, cpos) in centers) {
+                val d = hypot(t[0] - cpos[0], t[1] - cpos[1])
+                val key = norm(ch.toString()).firstOrNull() ?: ch
+                val cost = ((d - 0.35f) / 1.1f).coerceIn(0.05f, 1f)
+                val old = m[key]
+                if (old == null || cost < old) m[key] = cost
+            }
+            m
+        }
+    }
+
+    private fun subCostAt(i: Int, a: Char, b: Char): Float {
+        val tc = tapCost?.getOrNull(i) ?: return subCost(a, b)
+        return tc[b] ?: 1f
+    }
+
     private fun dist(a: String, b: String, max: Float): Float {
         val n = a.length
         val m = b.length
@@ -242,7 +271,7 @@ class Dictionary(private val userDir: File?) {
             val ca = a[i - 1]
             for (j in 1..m) {
                 val cb = b[j - 1]
-                val sub = if (ca == cb) 0f else subCost(ca, cb)
+                val sub = if (ca == cb) 0f else subCostAt(i - 1, ca, cb)
                 var v = min(min(prev[j] + 1f, cur[j - 1] + 1f), prev[j - 1] + sub)
                 if (i > 1 && j > 1 && ca == b[j - 2] && a[i - 2] == cb) v = min(v, prev2[j - 2] + 0.7f)
                 cur[j] = v
@@ -295,9 +324,14 @@ class Dictionary(private val userDir: File?) {
     }
 
     @Synchronized
-    fun suggest(typed: String, prev: String?): Suggestions {
+    /**
+     * @param taps finger positions (in key units) for each typed letter, or null
+     * @param centers key centers (in key units) of the letter keys
+     */
+    fun suggest(typed: String, prev: String?, taps: List<FloatArray?>? = null, centers: Map<Char, FloatArray>? = null): Suggestions {
         val lw = typed.lowercase()
         val nt = norm(lw)
+        buildTapCosts(taps, centers, nt.length)
         val typedValid = isValid(lw)
         val comp = HashMap<String, Float>()   // completions
         val corr = HashMap<String, Float>()   // corrections (same-ish length)
@@ -389,6 +423,7 @@ class Dictionary(private val userDir: File?) {
             !typedValid && ranked.isNotEmpty() -> listOf(typed, ranked[0], ranked.getOrElse(1) { "" })
             else -> listOf(ranked.getOrElse(0) { "" }, typed, ranked.getOrElse(1) { "" })
         }
+        tapCost = null
         return Suggestions(slots, auto, typedValid)
     }
 

@@ -39,6 +39,19 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var soundOn = true
 
     private val composing = StringBuilder()
+    /** Finger position (key units) of each letter in [composing]; null for letters not tapped. */
+    private val taps = ArrayList<FloatArray?>()
+    private var pendingTap: FloatArray? = null
+
+    private fun tapsFor(word: String): List<FloatArray?>? =
+        if (taps.size == word.length && taps.any { it != null }) ArrayList(taps) else null
+
+    private fun keyCenters(): Map<Char, FloatArray>? {
+        val v = kv ?: return null
+        val m = HashMap<Char, FloatArray>()
+        for ((k, c) in v.letterCenters()) m[k] = floatArrayOf(c[0] / v.unitW, c[1] / v.keyRowH)
+        return m
+    }
 
     // per-field flags
     private var predictionsOn = true
@@ -355,9 +368,11 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             if (lastWordWasGlide) return  // glide alternatives already shown
             val snapshot = composing.toString()
             val prev = context()
+            val tp = tapsFor(snapshot)
+            val centers = keyCenters()
             worker.removeCallbacksAndMessages(null)
             worker.post {
-                val r = dict.suggest(snapshot, prev)
+                val r = dict.suggest(snapshot, prev, tp, centers)
                 main.post {
                     if (composing.toString() == snapshot && !lastWordWasGlide) {
                         sugFor = snapshot
@@ -391,7 +406,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val typed = composing.toString()
         if (sugFor == typed && sugResult != null) return sugResult
         if (!dict.loaded) return null
-        val r = dict.suggest(typed, context())
+        val r = dict.suggest(typed, context(), tapsFor(typed), keyCenters())
         sugFor = typed
         sugResult = r
         return r
@@ -473,6 +488,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onPressFeedback() = vibrate()
 
     override fun onKey(key: Key) {
+        kv?.let { if (it.unitW > 0f) pendingTap = floatArrayOf(it.lastTapX / it.unitW, it.lastTapY / it.keyRowH) }
         when (key.code) {
             Codes.SHIFT -> handleShift()
             Codes.DELETE -> handleDelete()
@@ -486,7 +502,10 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         }
     }
 
-    override fun onAltText(text: String) = handleText(text)
+    override fun onAltText(text: String) {
+        pendingTap = null
+        handleText(text)
+    }
 
     private fun handleShift() {
         val v = kv ?: return
@@ -528,7 +547,11 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             }
             lastWordWasGlide = false
             val c = if (v.shiftState > 0) s.uppercase() else s
+            if (composing.isEmpty()) taps.clear()
+            while (taps.size < composing.length) taps.add(null)
             composing.append(c)
+            repeat(c.length) { taps.add(if (it == 0) pendingTap else null) }
+            pendingTap = null
             ic.setComposingText(composing, 1)
             if (v.shiftState == 1) v.shiftState = 0
             autoSpace = false
@@ -611,6 +634,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             } else {
                 val cp = Character.charCount(composing.codePointBefore(composing.length))
                 composing.setLength(composing.length - cp)
+                while (taps.size > composing.length) taps.removeAt(taps.size - 1)
             }
             lastWordWasGlide = false
             if (composing.isEmpty()) ic.commitText("", 1) else ic.setComposingText(composing, 1)
@@ -807,8 +831,15 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
 
+    /** Keeps listening until this long passes without you saying anything. */
+    private val voiceSilenceMs = 5000L
+    private var voiceUserStop = false
+    private var lastSpeechAt = 0L
+    private var voiceIntent: Intent? = null
+
     override fun onMic() {
         if (listening) {
+            voiceUserStop = true
             recognizer?.stopListening()   // final results still arrive
             return
         }
@@ -837,7 +868,12 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
         }
+        voiceIntent = intent
+        voiceUserStop = false
+        lastSpeechAt = SystemClock.uptimeMillis()
         voiceCaps = v.shiftState > 0
         voiceNeedsSpace = (ic.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
         listening = true
@@ -862,6 +898,21 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         return t
     }
 
+    private fun restartVoice() {
+        val r = recognizer ?: return
+        val i = voiceIntent ?: return
+        // next sentence continues after a space
+        voiceCaps = false
+        voiceNeedsSpace = (ic()?.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
+        listening = true
+        kv?.setVoice(true)
+        main.postDelayed({
+            if (listening && !voiceUserStop) {
+                try { r.startListening(i) } catch (_: Exception) { listening = false; kv?.setVoice(false) }
+            }
+        }, 80)
+    }
+
     private fun cancelVoice() {
         if (!listening) return
         listening = false
@@ -875,7 +926,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private val voiceListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
+        override fun onBeginningOfSpeech() { lastSpeechAt = SystemClock.uptimeMillis() }
         override fun onRmsChanged(rmsdB: Float) { kv?.setVoiceLevel(rmsdB) }
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
@@ -885,6 +936,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             if (!listening) return
             val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
             if (text.isBlank()) return
+            lastSpeechAt = SystemClock.uptimeMillis()
             val ic = ic() ?: return
             composing.setLength(0)
             composing.append(formatVoice(text))
@@ -894,13 +946,15 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
         override fun onResults(results: Bundle?) {
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-            listening = false
-            kv?.setVoice(false)
+            val keepGoing = !voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
+            listening = keepGoing
+            if (!keepGoing) kv?.setVoice(false)
             val ic = ic() ?: return
             val out = formatVoice(text)
             if (out.isBlank()) {
                 if (composing.isNotEmpty()) ic.commitText("", 1)
                 composing.setLength(0)
+                if (keepGoing) restartVoice()
                 return
             }
             ic.commitText(out, 1)
@@ -910,9 +964,18 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             for (w in words) afterWordCommitted(w.trim { !it.isLetterOrDigit() }, WordKind.TYPED)
             kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
             refreshSuggestions()
+            if (keepGoing) restartVoice()
         }
 
         override fun onError(error: Int) {
+            // silence / no match: keep listening until 5 s have passed without speech
+            if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) &&
+                !voiceUserStop && listening && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
+            ) {
+                if (composing.isNotEmpty()) { ic()?.finishComposingText(); composing.setLength(0) }
+                restartVoice()
+                return
+            }
             val hadText = composing.isNotEmpty()
             listening = false
             kv?.setVoice(false)

@@ -138,6 +138,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private var gy = FloatArray(1024)
     private var gCount = 0
     private var trailFadeStart = 0L
+    /** Where the finger touched for the last key tap (used by the autocorrector). */
+    var lastTapX = 0f
+        private set
+    var lastTapY = 0f
+        private set
     private var lastGlideProgress = 0L
     private var glidePreview = ""
 
@@ -1077,7 +1082,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     val k = curKey
                     removeCallbacks(longPress)
                     removeCallbacks(repeatDel)
-                    if (k != null && !(k.code == Codes.DELETE && delRepeated)) listener.onKey(k)
+                    if (k != null && !(k.code == Codes.DELETE && delRepeated)) { lastTapX = downX; lastTapY = downY; listener.onKey(k) }
                     val i = e.actionIndex
                     activeId = e.getPointerId(i)
                     start(e.getX(i), e.getY(i))
@@ -1271,7 +1276,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         when (mode) {
             Mode.PRESS -> {
                 val k = curKey
-                if (k != null && !(k.code == Codes.DELETE && delRepeated)) listener.onKey(k)
+                if (k != null && !(k.code == Codes.DELETE && delRepeated)) { lastTapX = downX; lastTapY = downY; listener.onKey(k) }
                 gCount = 0
             }
             Mode.POPUP -> {
