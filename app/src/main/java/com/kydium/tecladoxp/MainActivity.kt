@@ -562,6 +562,23 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    /** A label plus a row of buttons to pick one value (saved as an Int setting). */
+    private fun optionRow(parent: LinearLayout, label: String, desc: String, key: String, def: Int, options: List<Pair<Int, String>>) {
+        parent.addView(text(label, 15f, textC).apply { setPadding(0, dpi(12f), 0, 0) })
+        parent.addView(text(desc, 12f, muted).apply { setPadding(0, 0, 0, dpi(8f)) })
+        val current = settings.getInt(key, def)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((value, name) in options) {
+            row.addView(button(name, value == current) {
+                settings.edit().putInt(key, value).apply()
+                render()
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dpi(3f); rightMargin = dpi(3f)
+            })
+        }
+        parent.addView(row)
+    }
+
     private fun renderSettings() {
         val c = card()
         sectionTitle(c, "Ajustes")
@@ -588,6 +605,11 @@ class MainActivity : Activity() {
         switchRow(c, "Sonidos de XP", "Un \"pling\" al ganar XP y una melodía al subir de nivel", "xpsound", true)
         soundRow(c, "Sonido al ganar XP", SoundFx.ORB_FILE, REQ_ORB)
         soundRow(c, "Sonido al subir de nivel", SoundFx.LEVEL_FILE, REQ_LEVEL)
+
+        optionRow(c, "Sumar la XP después de", "Tiempo sin escribir para que la XP se sume a la barra", "xppause", 1000,
+            listOf(500 to "0.5 s", 1000 to "1 s", 2000 to "2 s", 3000 to "3 s"))
+        optionRow(c, "Dictado: esperar en silencio", "Cuánto espera el micrófono sin que hables antes de terminar", "voicesilence", 5000,
+            listOf(2000 to "2 s", 3000 to "3 s", 5000 to "5 s", 8000 to "8 s"))
 
         c.addView(text("Altura del teclado", 15f, textC).apply { setPadding(0, dpi(12f), 0, dpi(8f)) })
         val h = settings.getInt("height", 1)

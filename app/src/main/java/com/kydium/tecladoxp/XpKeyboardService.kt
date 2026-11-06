@@ -416,7 +416,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     /** XP is collected while you type and added all at once after a short pause. */
     private val flushXpRunnable = Runnable { flushXp() }
-    private val xpPauseMs = 1000L
+    private val xpPauseMs: Long get() = settings.getInt("xppause", 1000).toLong()
 
     private fun gainXp(word: String, kind: WordKind) {
         val letters = word.count { it.isLetter() }
@@ -861,7 +861,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var listening = false
 
     /** Keeps listening until this long passes without you saying anything. */
-    private val voiceSilenceMs = 5000L
+    private val voiceSilenceMs: Long get() = settings.getInt("voicesilence", 5000).toLong()
     private var voiceUserStop = false
     private var lastSpeechAt = 0L
     private var voiceIntent: Intent? = null
