@@ -217,8 +217,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                         val list = ArrayList<String>()
                         for (tok in parts.drop(1)) {
                             if (tok.isEmpty()) continue
-                            // "base|tone1|tone2…": keep only what this phone's font can draw
-                            val vars = tok.split('|').filter { probe.hasGlyph(it) }
+                            // "base|tone1|tone2…"; "~" marks recent emojis (Emoji 15+): those are
+                            // only shown if this phone's font can draw them
+                            val isNew = tok.startsWith("~")
+                            val all = tok.removePrefix("~").split('|')
+                            val vars = if (isNew) all.filter { probe.hasGlyph(it) } else all
                             if (vars.isEmpty()) continue
                             list.add(vars[0])
                             if (vars.size > 1) emojiVariants[vars[0]] = vars
