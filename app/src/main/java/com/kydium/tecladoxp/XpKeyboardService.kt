@@ -796,7 +796,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val prev = context()
         worker.removeCallbacksAndMessages(null)
         worker.post {
-            val res = try { dict.glide(px, py, n, centers, kw, kh, prev) } catch (_: Exception) { emptyList() }
+            val res = try { dict.glide(px, py, n, centers, kw, kh, prev, live = true) } catch (_: Exception) { emptyList() }
             main.post {
                 if (seq == glideSeq && glidePrepared && res.isNotEmpty()) showGlideWord(res, false)
             }

@@ -37,6 +37,8 @@ class Dictionary(private val userDir: File?) {
     private var sortedIdx: IntArray = IntArray(0)
     private var byLen: HashMap<Int, IntArray> = HashMap()
     private var glideBuckets: HashMap<Int, IntArray> = HashMap()
+    /** Words (3+ swipe letters) by first letter, for guessing a word before the swipe ends. */
+    private var firstIdx: HashMap<Char, IntArray> = HashMap()
 
     /** Every word you commit, with how many times (dictionary words too: it's your personal ranking). */
     private val userWords = HashMap<String, Int>()
@@ -131,15 +133,18 @@ class Dictionary(private val userDir: File?) {
 
         val lenMap = HashMap<Int, ArrayList<Int>>()
         val gMap = HashMap<Int, ArrayList<Int>>()
+        val fMap = HashMap<Char, ArrayList<Int>>()
         for (i in 0 until n) {
             lenMap.getOrPut(na[i].length) { ArrayList() }.add(i)
             val g = ga[i]
             if (g.length >= 2) gMap.getOrPut(bucketKey(g[0], g[g.length - 1])) { ArrayList() }.add(i)
+            if (g.length >= 3) fMap.getOrPut(g[0]) { ArrayList() }.add(i)
         }
 
         words = wa; norms = na; gpaths = ga; freqs = fa; exact = ex; sortedIdx = sorted
         byLen = HashMap(lenMap.mapValues { it.value.toIntArray() })
         glideBuckets = HashMap(gMap.mapValues { it.value.toIntArray() })
+        firstIdx = HashMap(fMap.mapValues { it.value.toIntArray() })
         if (!userLoaded) loadUser()
         loaded = true
     }
@@ -520,7 +525,8 @@ class Dictionary(private val userDir: File?) {
     @Synchronized
     fun glide(
         px: FloatArray, py: FloatArray, cnt: Int,
-        centers: Map<Char, FloatArray>, kw: Float, kh: Float, prev: String?
+        centers: Map<Char, FloatArray>, kw: Float, kh: Float, prev: String?,
+        live: Boolean = false
     ): List<String> {
         if (!loaded || cnt < 2) return emptyList()
         // normalize to key units
@@ -584,6 +590,35 @@ class Dictionary(private val userDir: File?) {
             val ed = ends.firstOrNull { it.first == gp[gp.length - 1] }?.second ?: continue
             consider(gp, w, 4.5f + ln(1f + c), sd, ed)
         }
+        // while the finger is still moving: also words whose *beginning* matches the swipe so far
+        // (so the word you want shows up before you reach all its letters, like Gboard)
+        if (live) {
+            // the finger is still moving: keep only "this word so far" matches
+            scores.clear()
+            passRadius = gPass
+            val ex0 = ux[N - 1]
+            val ey0 = uy[N - 1]
+            for ((st, sd) in starts) {
+                val arr = firstIdx[st] ?: continue
+                for (idx in arr) {
+                    val display = words[idx]
+                    if (blocked(display)) continue
+                    val gp = gpaths[idx]
+                    val m = partialMatch(gp, cx, ex0, ey0) ?: continue
+                    val (loc, done) = m
+                    if (loc > 1.0f) continue
+                    val sc = freqs[idx] / 100f * gFreq - loc * gLoc - sd * gEnds - 0.08f * (gp.length - done) +
+                        bigramBoost(prev, display) + userBoost(display) + (personal[display.lowercase()] ?: 0f)
+                    val old = scores[display]
+                    if (old == null || sc > old) scores[display] = sc
+                }
+            }
+            // 2-letter words
+            for ((st, sd) in starts) for ((e, ed) in ends) {
+                val bucket = glideBuckets[bucketKey(st, e)] ?: continue
+                for (idx in bucket) if (gpaths[idx].length == 2) consider(gpaths[idx], words[idx], freqs[idx] / 100f, sd, ed)
+            }
+        }
         // words you swiped this way before, even if the generic matcher missed them
         for ((w, b) in personal) {
             val display = exact[w]?.let { words[it] } ?: w
@@ -603,6 +638,36 @@ class Dictionary(private val userDir: File?) {
             l += hypot(a[0] - b[0], a[1] - b[1])
         }
         return l
+    }
+
+    /**
+     * Where is the finger along word [gp]? Returns (shape distance, letters reached) if the
+     * swipe so far looks like the beginning of the word — the finger may be between two letters.
+     */
+    private fun partialMatch(gp: String, cx: Map<Char, FloatArray>, ex: Float, ey: Float): Pair<Float, Int>? {
+        var best: Pair<Float, Int>? = null
+        for (seg in 1 until gp.length) {
+            val a = cx[gp[seg - 1]] ?: return null
+            val b = cx[gp[seg]] ?: return null
+            val vx = b[0] - a[0]
+            val vy = b[1] - a[1]
+            val len2 = vx * vx + vy * vy
+            var t = if (len2 > 0f) ((ex - a[0]) * vx + (ey - a[1]) * vy) / len2 else 0f
+            t = t.coerceIn(0f, 1f)
+            val px = a[0] + vx * t
+            val py = a[1] + vy * t
+            if (hypot(ex - px, ey - py) > 0.75f) continue
+            if (!passes(gp.substring(0, seg), cx)) continue
+            // ideal path: letters reached so far + the point where the finger is now
+            for (i in 0 until seg) { val k = cx[gp[i]]!!; tmpX[i] = k[0]; tmpY[i] = k[1] }
+            tmpX[seg] = px; tmpY[seg] = py
+            resample(tmpX, tmpY, seg + 1, ix, iy)
+            var sum = 0f
+            for (i in 0 until N) sum += hypot(ux[i] - ix[i], uy[i] - iy[i])
+            val r = Pair(sum / N, if (t > 0.85f) seg + 1 else seg)
+            if (best == null || r.first < best.first) best = r
+        }
+        return best
     }
 
     /** How far the path stays from keys the word needs (letters the finger never really reached). */
