@@ -103,7 +103,12 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) render()
+        if (hasFocus && !training) render()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (training) stopTraining(false)
     }
 
     // ------------------------------------------------------------ ui helpers
@@ -174,6 +179,7 @@ class MainActivity : Activity() {
         renderSettings()
         renderMyWords()
         renderLearnChats()
+        renderTrainer()
         renderTest()
     }
 
@@ -1005,6 +1011,186 @@ class MainActivity : Activity() {
         }
         c.addView(et)
         root.addView(c)
+    }
+
+    // ------------------------------------------------------------ swipe trainer
+
+    private var training = false
+    private var trainQueue = ArrayList<String>()
+    private var trainWord = ""
+    private var trainTries = 0
+    private var trainHits = 0
+    private var trainWordView: TextView? = null
+    private var trainStatus: TextView? = null
+    private var trainScore: TextView? = null
+    private var trainField: EditText? = null
+
+    private val trainWords = ("hola que como estas bien gracias porque pero también siempre nada ahora " +
+        "mañana después entonces cuando donde quiero tengo puedo vamos hacer decir sabes mucho poco " +
+        "casa trabajo amigo hermano mamá papá comer dormir hablar escribir mensaje teléfono celular " +
+        "noche tarde temprano semana ayer hoy todo todos alguien nadie cosa tiempo verdad claro listo " +
+        "bueno mejor peor nunca otra vez llegar salir volver esperar mira oye pues igual creo parece").split(" ")
+
+    private fun renderTrainer() {
+        val c = card()
+        sectionTitle(c, "🎯 Entrenador de deslizado")
+        if (!training) {
+            c.addView(text(
+                "Te muestro una palabra, la escribes deslizando y el teclado aprende tu forma de hacerla. " +
+                    "También guarda tus deslizadas de todos los días (la palabra que querías y lo que adivinó). " +
+                    "Cuando tengas bastantes, copia el código y envíamelo para mejorar la predicción.",
+                12.5f, muted
+            ).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
+            val n = GlideLog.count
+            val miss = GlideLog.misses
+            c.addView(text(
+                if (n == 0) "Aún no hay deslizadas guardadas"
+                else "〰️ Deslizadas guardadas: $n  ·  acertó ${n - miss} (${(100 * (n - miss)) / n}%)",
+                13f, textC
+            ).apply { setPadding(0, 0, 0, dpi(10f)) })
+            c.addView(button("Empezar a entrenar", true) { startTraining() },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            if (n > 0) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, dpi(8f), 0, 0)
+                }
+                row.addView(button("Copiar código", false) { exportLog(false) },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(3f) })
+                row.addView(button("Compartir", false) { exportLog(true) },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(3f); rightMargin = dpi(3f) })
+                row.addView(button("Borrar", false) {
+                    AlertDialog.Builder(this)
+                        .setTitle("¿Borrar las deslizadas guardadas?")
+                        .setMessage("Lo que el teclado ya aprendió se mantiene.")
+                        .setPositiveButton("Borrar") { _, _ -> GlideLog.clear(); render() }
+                        .setNegativeButton("Cancelar", null)
+                        .show()
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(3f) })
+                c.addView(row)
+            }
+            root.addView(c)
+            return
+        }
+        c.addView(text("Desliza esta palabra:", 13f, muted))
+        val wv = text(trainWord, 34f, textC, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dpi(8f), 0, dpi(4f))
+        }
+        trainWordView = wv
+        c.addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val st = text(" ", 15f, muted).apply { gravity = Gravity.CENTER }
+        trainStatus = st
+        c.addView(st, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val et = EditText(this).apply {
+            hint = "Desliza aquí con Teclado XP…"
+            setHintTextColor(muted)
+            setTextColor(textC)
+            textSize = 18f
+            inputType = InputType.TYPE_CLASS_TEXT
+            background = rounded(cardBg2, 12f)
+            setPadding(dpi(12f), dpi(12f), dpi(12f), dpi(12f))
+        }
+        trainField = et
+        c.addView(et, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dpi(10f)
+        })
+        val sc = text("", 13f, muted).apply { setPadding(0, dpi(8f), 0, 0) }
+        trainScore = sc
+        c.addView(sc)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dpi(10f), 0, 0)
+        }
+        row.addView(button("Saltar", false) { nextTrainWord() },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(4f) })
+        row.addView(button("Terminar", true) { stopTraining(true) },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(4f) })
+        c.addView(row)
+        updateTrainScore()
+        root.addView(c)
+    }
+
+    private fun startTraining() {
+        val dict = Dictionary.get(filesDir)
+        dict.ensureUser()
+        val pool = LinkedHashSet<String>()
+        pool.addAll(GlideLog.missedWords(15))          // the ones it got wrong first
+        val rest = (trainWords + dict.myWords().take(20)).filter { it.length > 1 }.shuffled()
+        pool.addAll(rest)
+        trainQueue = ArrayList(pool)
+        trainTries = 0
+        trainHits = 0
+        training = true
+        trainWord = trainQueue.removeAt(0)
+        Trainer.target = trainWord
+        Trainer.onResult = { guesses -> onTrainResult(guesses) }
+        render()
+        val et = trainField ?: return
+        et.requestFocus()
+        et.postDelayed({
+            try { getSystemService(InputMethodManager::class.java)?.showSoftInput(et, 0) } catch (_: Exception) {}
+        }, 200)
+        scroll?.postDelayed({ scroll?.smoothScrollTo(0, (et.parent as? View)?.top ?: 0) }, 350)
+    }
+
+    private fun onTrainResult(guesses: List<String>) {
+        if (!training) return
+        val got = guesses.firstOrNull()?.lowercase() ?: ""
+        trainTries++
+        val ok = got == trainWord.lowercase()
+        if (ok) trainHits++
+        trainStatus?.text = if (ok) "✅ ¡Bien!" else if (got.isEmpty()) "❌ No reconoció nada" else "❌ Salió «$got» · ya lo aprendí"
+        trainStatus?.setTextColor(if (ok) Color.parseColor("#4ADE80") else Color.parseColor("#F87171"))
+        updateTrainScore()
+        trainWordView?.postDelayed({ if (training) nextTrainWord() }, if (ok) 550L else 1300L)
+    }
+
+    private fun nextTrainWord() {
+        if (!training) return
+        if (trainQueue.isEmpty()) trainQueue = ArrayList(trainWords.shuffled())
+        trainWord = trainQueue.removeAt(0)
+        Trainer.target = trainWord
+        trainWordView?.text = trainWord
+        trainStatus?.text = " "
+        trainField?.setText("")
+    }
+
+    private fun updateTrainScore() {
+        trainScore?.text = if (trainTries == 0) "Desliza sin miedo: los errores también le enseñan"
+        else "Aciertos: $trainHits de $trainTries  (${100 * trainHits / trainTries}%)"
+    }
+
+    private fun stopTraining(rerender: Boolean) {
+        training = false
+        Trainer.target = null
+        Trainer.onResult = null
+        Dictionary.get(filesDir).saveAsync()
+        trainField = null; trainWordView = null; trainStatus = null; trainScore = null
+        if (rerender) render()
+    }
+
+    private fun exportLog(share: Boolean) {
+        val code = try {
+            GlideLog.export(Updater.currentName(this), settings.getString("lang", "es") ?: "es")
+        } catch (e: Exception) {
+            Toast.makeText(this, "No se pudo armar el código: ${e.message}", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (share) {
+            try {
+                val i = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, code)
+                startActivity(Intent.createChooser(i, "Enviar código de deslizado"))
+            } catch (_: Exception) {
+                Toast.makeText(this, "No se pudo compartir", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            try {
+                getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Deslizado Teclado XP", code))
+                Toast.makeText(this, "Código copiado (${code.length / 1000} mil letras). Pégalo en el chat", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+            }
+        }
     }
 
     // ------------------------------------------------------------ custom views

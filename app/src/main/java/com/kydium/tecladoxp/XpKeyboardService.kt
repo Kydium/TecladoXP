@@ -186,6 +186,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onCreate() {
         super.onCreate()
         CrashLog.init(this)
+        GlideLog.init(this)
         XpManager.init(this)
         TouchModel.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -660,6 +661,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             }
         }
         ic.commitText(final, 1)
+        if (kind != WordKind.GLIDE) GlideLog.typedAfterDelete(final)
         // kept exactly as typed with the keys: teach the touch model where you press
         if (final == typed && kind == WordKind.TYPED) {
             val v = kv
@@ -835,6 +837,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         if (composing.isNotEmpty()) {
             if (lastWordWasGlide) {
                 composing.setLength(0)
+                GlideLog.deleted()
                 lastGlideX = null; lastGlideY = null
             } else {
                 val cp = Character.charCount(composing.codePointBefore(composing.length))
@@ -954,6 +957,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val y = lastGlideY ?: return
         val v = kv ?: return
         lastGlideX = null; lastGlideY = null
+        GlideLog.kept(word)
         if (noLearn || v.unitW <= 0f || v.keyRowH <= 0f) return
         val (cx, cy) = canonPath(v, x, y, x.size)
         dict.learnGlide(word, cx, cy, cx.size, 1f, 1f)
@@ -1031,7 +1035,19 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         lastGlideY = py.copyOf(n)
         if (v.unitW <= 0f || v.keyRowH <= 0f) return
         val (cx, cy) = canonPath(v, px, py, n)
-        val res = dict.glide(cx, cy, n, canonCenters(v), 1f, 1f, context())
+        val centers = canonCenters(v)
+        val res = dict.glide(cx, cy, n, centers, 1f, 1f, context())
+        GlideLog.setCenters(centers)
+        val target = Trainer.target
+        if (target != null) {
+            // trainer: we know the word you meant, so it's recorded and learned right away
+            GlideLog.trainer(target, cx, cy, n, res, context())
+            if (!noLearn) dict.learnGlide(target, cx, cy, n, 1f, 1f)
+            lastGlideX = null; lastGlideY = null
+            main.post { CrashLog.safe("entrenador") { Trainer.onResult?.invoke(res) } }
+        } else {
+            GlideLog.swiped(cx, cy, n, res, context())
+        }
         if (res.isEmpty()) {
             // keep the live preview if there was one
             if (composing.isNotEmpty() && lastWordWasGlide) {
