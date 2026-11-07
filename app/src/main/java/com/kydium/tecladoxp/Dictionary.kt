@@ -376,7 +376,17 @@ class Dictionary(private val userDir: File?) {
             val idx = sortedIdx[k]
             val extra = norms[idx].length - nt.length
             if (extra <= 0) continue
-            put(comp, words[idx], freqs[idx] / 100f - 0.35f * extra - 0.8f + bigramBoost(prev, words[idx]) + userBoost(words[idx]))
+            val ctxB = bigramBoost(prev, words[idx]) + userBoost(words[idx])
+            put(comp, words[idx], freqs[idx] / 100f - 0.35f * extra - 0.8f + ctxB)
+            // a word that is only 1-2 letters longer can also be the autocorrection
+            // ("muchas graci" -> "gracias", "cómo est" -> "estás"), helped a lot by context
+            if (extra <= 2 && nt.length >= 2) {
+                val d = 0.6f * extra
+                put(corr, words[idx], freqs[idx] / 100f - d * 2.4f + ctxB)
+                val od = corrDist[words[idx]]
+                if (od == null || d < od) corrDist[words[idx]] = d
+                corrFreq[words[idx]] = freqs[idx]
+            }
         }
 
         // corrections
