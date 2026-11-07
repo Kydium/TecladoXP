@@ -632,7 +632,8 @@ class MainActivity : Activity() {
                 "• Desliza a la izquierda desde ⌫ para borrar palabras\n" +
                 "• Mantén la barra espaciadora para cambiar de idioma\n" +
                 "• Toca ⇧ dos veces para bloquear mayúsculas\n" +
-                "• Toca tu nivel en el teclado para abrir esta pantalla",
+                "• Toca el engranaje (antes de escribir) para abrir esta pantalla\n" +
+                "• Toca el portapapeles (antes de escribir) para pegar lo que copiaste",
             13f, muted
         ).apply { setLineSpacing(dp(3f), 1f) })
 

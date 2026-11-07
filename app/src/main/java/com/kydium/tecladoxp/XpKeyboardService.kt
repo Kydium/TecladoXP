@@ -2,6 +2,7 @@ package com.kydium.tecladoxp
 
 import android.content.Context
 import android.content.Intent
+import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -140,6 +141,9 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onCreate()
         XpManager.init(this)
         TouchModel.init(this)
+        clipboard = getSystemService(ClipboardManager::class.java)
+        loadClips()
+        try { clipboard?.addPrimaryClipChangedListener(clipListener) } catch (_: Exception) {}
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
         dict = Dictionary.get(filesDir)
         val th = HandlerThread("tecladoxp-dict")
@@ -158,6 +162,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onDestroy() {
         dict.saveAsync()
         sounds?.release()
+        try { clipboard?.removePrimaryClipChangedListener(clipListener) } catch (_: Exception) {}
         recognizer?.destroy()
         recognizer = null
         workerThread?.quitSafely()
@@ -260,6 +265,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             else -> "↵"
         }
         v.shiftState = 0
+        captureClip()
         updateShiftAuto()
         refreshXp()
         refreshSuggestions()
@@ -844,6 +850,71 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
         refreshSuggestions()
     }
+
+    // ================================================================= clipboard
+
+    private var clipboard: ClipboardManager? = null
+    private val clipHistory = ArrayList<String>()
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip() }
+    private val clipSep = "\u001E"
+
+    private fun loadClips() {
+        val raw = settings.getString("clips", "") ?: ""
+        clipHistory.clear()
+        if (raw.isNotEmpty()) clipHistory.addAll(raw.split(clipSep).filter { it.isNotEmpty() })
+    }
+
+    private fun saveClips() {
+        settings.edit().putString("clips", clipHistory.joinToString(clipSep)).apply()
+        kv?.setClips(ArrayList(clipHistory))
+    }
+
+    /** Reads what's copied right now and adds it to the history (skips passwords marked sensitive). */
+    private fun captureClip() {
+        try {
+            val clip = clipboard?.primaryClip ?: return
+            if (clip.itemCount == 0) return
+            val sensitive = clip.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
+            if (sensitive) return
+            val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return
+            if (text.isBlank() || text.length > 5000) return
+            clipHistory.remove(text)
+            clipHistory.add(0, text)
+            while (clipHistory.size > 25) clipHistory.removeAt(clipHistory.size - 1)
+            saveClips()
+        } catch (_: Exception) {
+        }
+    }
+
+    override fun onClipboard() {
+        captureClip()
+        kv?.setClips(ArrayList(clipHistory))
+        kv?.showClipboard()
+    }
+
+    override fun onClipPick(index: Int) {
+        val ic = ic() ?: return
+        val text = clipHistory.getOrNull(index) ?: return
+        if (composing.isNotEmpty()) commitWord(false)
+        ic.commitText(text, 1)
+        lastCorrection = null
+        autoSpace = false
+        kv?.setLayout(LayoutType.LETTERS)
+        updateShiftAuto()
+        refreshSuggestions()
+    }
+
+    override fun onClipDelete(index: Int) {
+        if (index in clipHistory.indices) clipHistory.removeAt(index)
+        saveClips()
+    }
+
+    override fun onClipClear() {
+        clipHistory.clear()
+        saveClips()
+    }
+
+    override fun onSettings() = onBadge()
 
     override fun onBadge() {
         try {

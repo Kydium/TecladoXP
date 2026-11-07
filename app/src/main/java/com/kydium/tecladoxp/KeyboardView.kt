@@ -36,6 +36,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         fun onBadge()
         fun onSpaceLongPress()
         fun onMic()
+        fun onClipboard()
+        fun onSettings()
+        fun onClipPick(index: Int)
+        fun onClipDelete(index: Int)
+        fun onClipClear()
         fun onPressFeedback()
     }
 
@@ -114,7 +119,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val rect = RectF()
 
     // ------------------------------------------------------------------ touch state
-    private enum class Mode { NONE, PRESS, POPUP, GLIDE, CURSOR, DELSWIPE, STRIP, EMOJI }
+    private enum class Mode { NONE, PRESS, POPUP, GLIDE, CURSOR, DELSWIPE, STRIP, EMOJI, CLIP }
 
     private var mode = Mode.NONE
     private var activeId = -1
@@ -169,6 +174,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     fun setLayout(type: LayoutType) {
         emojiMode = false
         voiceMode = false
+        clipMode = false
         layout = when (type) {
             LayoutType.LETTERS -> letters
             LayoutType.SYMBOLS -> symbols
@@ -203,6 +209,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     fun showEmojis() {
         if (emojiCats.isEmpty()) loadEmojis()
         emojiMode = true
+        clipMode = false
         emojiCat = if (recents.isNotEmpty()) 0 else 1
         emojiScroll = 0f
         emojiVel = 0f
@@ -342,6 +349,131 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             emojiVel *= 0.93f
             postInvalidateOnAnimation()
         }
+    }
+
+    // ------------------------------------------------------------------ clipboard
+    var clipMode = false
+        private set
+    private var clips: List<String> = emptyList()
+    private var clipScroll = 0f
+    private var clipScrolled = false
+    private val clipHeaderH get() = dp(42f)
+    private val clipItemH get() = dp(54f)
+
+    fun setClips(list: List<String>) {
+        clips = list
+        clipScroll = clipScroll.coerceIn(0f, clipMaxScroll())
+        invalidate()
+    }
+
+    fun showClipboard() {
+        emojiMode = false
+        clipMode = true
+        clipScroll = 0f
+        cancelGesture()
+        invalidate()
+    }
+
+    private fun clipMaxScroll(): Float =
+        max(0f, clips.size * clipItemH + dp(8f) - (height - topH - clipHeaderH))
+
+    private fun drawClipIcon(c: Canvas, cx: Float, cy: Float, s: Float, color: Int) {
+        linePaint.shader = null
+        linePaint.color = color
+        linePaint.style = Paint.Style.STROKE
+        linePaint.strokeWidth = dp(1.7f)
+        rect.set(cx - s * 0.8f, cy - s * 0.85f, cx + s * 0.8f, cy + s * 1.05f)
+        c.drawRoundRect(rect, s * 0.25f, s * 0.25f, linePaint)
+        linePaint.style = Paint.Style.FILL
+        rect.set(cx - s * 0.4f, cy - s * 1.15f, cx + s * 0.4f, cy - s * 0.6f)
+        c.drawRoundRect(rect, s * 0.15f, s * 0.15f, linePaint)
+        linePaint.strokeWidth = dp(1.5f)
+        c.drawRect(cx - s * 0.45f, cy - s * 0.15f, cx + s * 0.45f, cy - s * 0.15f + dp(1.5f), linePaint)
+        c.drawRect(cx - s * 0.45f, cy + s * 0.35f, cx + s * 0.25f, cy + s * 0.35f + dp(1.5f), linePaint)
+    }
+
+    private fun drawGearIcon(c: Canvas, cx: Float, cy: Float, s: Float, color: Int) {
+        linePaint.shader = null
+        linePaint.color = color
+        linePaint.style = Paint.Style.FILL
+        // teeth
+        for (i in 0 until 8) {
+            c.save()
+            c.rotate(i * 45f, cx, cy)
+            c.drawRect(cx - s * 0.2f, cy - s * 1.05f, cx + s * 0.2f, cy - s * 0.6f, linePaint)
+            c.restore()
+        }
+        linePaint.style = Paint.Style.STROKE
+        linePaint.strokeWidth = s * 0.35f
+        c.drawCircle(cx, cy, s * 0.6f, linePaint)
+        linePaint.style = Paint.Style.FILL
+    }
+
+    private fun drawClipPanel(c: Canvas, t: KbTheme) {
+        val w = width.toFloat()
+        val top = topH
+        // header: back to letters · title · clear all
+        textPaint.typeface = Typeface.DEFAULT_BOLD
+        textPaint.textSize = sp(14f)
+        textPaint.color = t.text
+        c.drawText("ABC", dp(32f), top + clipHeaderH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        c.drawText("Portapapeles", w / 2f, top + clipHeaderH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        if (clips.isNotEmpty()) {
+            textPaint.typeface = Typeface.DEFAULT
+            textPaint.textSize = sp(12.5f)
+            textPaint.color = t.accent2
+            c.drawText("Borrar todo", w - dp(48f), top + clipHeaderH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        }
+        val listTop = top + clipHeaderH
+        c.save()
+        c.clipRect(0f, listTop, w, height.toFloat())
+        if (clips.isEmpty()) {
+            textPaint.typeface = Typeface.DEFAULT
+            textPaint.textSize = sp(13f)
+            textPaint.color = t.textMuted
+            c.drawText("Copia algo y aparecerá aquí", w / 2f, listTop + dp(60f), textPaint)
+        }
+        clips.forEachIndexed { i, clip ->
+            val y0 = listTop + i * clipItemH - clipScroll
+            if (y0 > height || y0 + clipItemH < listTop) return@forEachIndexed
+            keyPaint.shader = null
+            keyPaint.color = t.key
+            rect.set(dp(8f), y0 + dp(3f), w - dp(8f), y0 + clipItemH - dp(3f))
+            c.drawRoundRect(rect, dp(10f), dp(10f), keyPaint)
+            val one = clip.replace('\n', ' ').trim()
+            textPaint.typeface = Typeface.DEFAULT
+            textPaint.textSize = sp(14f)
+            textPaint.color = t.text
+            textPaint.textAlign = Paint.Align.LEFT
+            val maxW = w - dp(70f)
+            var shown = one
+            if (textPaint.measureText(shown) > maxW) {
+                while (shown.isNotEmpty() && textPaint.measureText("$shown…") > maxW) shown = shown.dropLast(1)
+                shown = "$shown…"
+            }
+            c.drawText(shown, dp(20f), rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+            textPaint.textAlign = Paint.Align.CENTER
+            textPaint.color = t.textMuted
+            textPaint.textSize = sp(16f)
+            c.drawText("✕", w - dp(32f), rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        }
+        c.restore()
+        textPaint.textAlign = Paint.Align.CENTER
+    }
+
+    private fun clipTap(x: Float, y: Float) {
+        val w = width.toFloat()
+        if (y < topH + clipHeaderH) {
+            when {
+                x < dp(70f) -> { listener.onPressFeedback(); listener.onKey(Key("ABC", Codes.LETTERS)) }
+                x > w - dp(100f) && clips.isNotEmpty() -> { listener.onPressFeedback(); listener.onClipClear() }
+            }
+            return
+        }
+        val i = ((y - topH - clipHeaderH + clipScroll) / clipItemH).toInt()
+        if (i !in clips.indices) return
+        listener.onPressFeedback()
+        if (x > w - dp(56f)) listener.onClipDelete(i) else listener.onClipPick(i)
     }
 
     // ------------------------------------------------------------------ voice typing
@@ -604,6 +736,19 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         drawMicButton(c, w - micW / 2f, sugH / 2f, t)
         val slotW = (w - micW) / 3f
         val textY = sugH / 2f + dp(1f)
+        if (suggestions.all { it.isEmpty() }) {
+            // toolbar before you start typing: clipboard and settings
+            for ((i, cxT) in listOf(toolX(0), toolX(1)).withIndex()) {
+                val pressedT = mode == Mode.STRIP && stripPressed == -4 - i
+                if (pressedT || (i == 0 && clipMode)) {
+                    keyPaint.shader = null
+                    keyPaint.color = if (i == 0 && clipMode) t.accent else t.keyPressed
+                    c.drawCircle(cxT, sugH / 2f, dp(15f), keyPaint)
+                }
+                val col = if (i == 0 && clipMode) Color.WHITE else t.text
+                if (i == 0) drawClipIcon(c, cxT, sugH / 2f, dp(8f), col) else drawGearIcon(c, cxT, sugH / 2f, dp(8f), col)
+            }
+        }
         for (i in 0..2) {
             val s = suggestions[i]
             val x0 = slotW * i
@@ -717,6 +862,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         var idx = 0
         if (voiceMode) {
             drawVoicePanel(c, t)
+            return
+        }
+        if (clipMode) {
+            drawClipPanel(c, t)
             return
         }
         if (emojiMode) drawEmojiPanel(c)
@@ -1069,10 +1218,17 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return best
     }
 
+    private fun toolX(i: Int) = dp(28f) + i * dp(48f)
+
     private fun stripIndexAt(x: Float, y: Float): Int {
-        if (y >= sugH) return -2   // xp row opens the profile
+        if (y >= sugH) return -1   // xp row: no action
         val micW = dp(44f)
         if (x >= width - micW) return -3   // microphone
+        if (suggestions.all { it.isEmpty() }) {
+            if (x < toolX(0) + dp(24f)) return -4   // clipboard
+            if (x < toolX(1) + dp(24f)) return -5   // settings
+            return -1
+        }
         val i = (x / ((width - micW) / 3f)).toInt().coerceIn(0, 2)
         return if (suggestions[i].isNotEmpty()) i else -1
     }
@@ -1160,6 +1316,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             bannerStart = SystemClock.uptimeMillis()
             mode = Mode.NONE
             invalidate()
+            return
+        }
+        if (clipMode && y >= topH) {
+            mode = Mode.CLIP
+            clipScrolled = false
+            lastMoveY = y
             return
         }
         if (voiceMode && y >= topH) {
@@ -1294,6 +1456,14 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     invalidate()
                 }
             }
+            Mode.CLIP -> {
+                if (abs(y - downY) > dp(8f)) clipScrolled = true
+                if (clipScrolled) {
+                    clipScroll = (clipScroll - (y - lastMoveY)).coerceIn(0f, clipMaxScroll())
+                    lastMoveY = y
+                    invalidate()
+                }
+            }
             Mode.NONE -> {}
         }
     }
@@ -1325,8 +1495,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             Mode.STRIP -> {
                 val i = stripIndexAt(x, y)
                 if (i == stripPressed) {
-                    if (i == -2) listener.onBadge()
-                    else if (i == -3) listener.onMic()
+                    if (i == -3) listener.onMic()
+                    else if (i == -4) listener.onClipboard()
+                    else if (i == -5) listener.onSettings()
                     else if (i >= 0) listener.onSuggestion(i)
                 }
                 stripPressed = -1
@@ -1344,6 +1515,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     emojiVel = 0f
                 }
             }
+            Mode.CLIP -> if (!clipScrolled) clipTap(downX, downY)
             Mode.CURSOR, Mode.NONE -> {}
         }
         mode = Mode.NONE
