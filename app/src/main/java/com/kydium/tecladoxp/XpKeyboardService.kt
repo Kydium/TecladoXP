@@ -141,10 +141,10 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onCreate()
         XpManager.init(this)
         TouchModel.init(this)
+        settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
         clipboard = getSystemService(ClipboardManager::class.java)
         loadClips()
         try { clipboard?.addPrimaryClipChangedListener(clipListener) } catch (_: Exception) {}
-        settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
         dict = Dictionary.get(filesDir)
         val th = HandlerThread("tecladoxp-dict")
         th.start()
