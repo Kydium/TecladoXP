@@ -158,14 +158,18 @@ class Dictionary(private val userDir: File?) {
         @Volatile private var shared: Dictionary? = null
 
         // glide scoring weights (tuned on simulated finger paths)
-        var gFreq = 1.5f
-        var gLoc = 6.5f
-        var gMiss = 3f
-        var gLen = 6f
+        var gFreq = 2f
+        var gLoc = 8f
+        var gMiss = 2f
+        var gLen = 4f
         var gEnds = 4f
-        var gPass = 1.25f
+        var gPass = 1.4f
         var tRadius = 0.6f
         var tScale = 14f
+        /** How far (keys) the start / end of a swipe may be from the first / last letter. */
+        var gNear = 1.15f
+        /** Worst shape distance still considered. */
+        var gLocMax = 1.0f
 
         /** One dictionary per app process, shared by the keyboard and the settings screen. */
         fun get(dir: File): Dictionary = shared ?: synchronized(this) {
@@ -611,14 +615,14 @@ class Dictionary(private val userDir: File?) {
         val cx = HashMap<Char, FloatArray>()
         for ((k, v) in centers) cx[k] = floatArrayOf(v[0] / kw, v[1] / kh)
 
-        fun nearest(x: Float, y: Float): List<Pair<Char, Float>> =
+        fun nearest(x: Float, y: Float, r: Float = gNear): List<Pair<Char, Float>> =
             cx.entries.map { Pair(it.key, hypot(it.value[0] - x, it.value[1] - y)) }
-                .filter { it.second < 1.15f }.sortedBy { it.second }.take(3)
+                .filter { it.second < r }.sortedBy { it.second }.take(3)
 
         var userLen = 0f
         for (i in 1 until N) userLen += hypot(ux[i] - ux[i - 1], uy[i] - uy[i - 1])
-        val starts = nearest(ux[0], uy[0])
-        val ends = nearest(ux[N - 1], uy[N - 1])
+        var starts = nearest(ux[0], uy[0])
+        var ends = nearest(ux[N - 1], uy[N - 1])
         val scores = HashMap<String, Float>()
 
         fun consider(gp: String, display: String, freq: Float, sd: Float, ed: Float) {
@@ -626,7 +630,7 @@ class Dictionary(private val userDir: File?) {
             val bonus = personal[display.lowercase()] ?: 0f
             if (bonus <= 0f && !passes(gp, cx)) return
             val loc = shapeDist(gp, cx)
-            if (loc > 1.0f && bonus <= 0f) return
+            if (loc > gLocMax && bonus <= 0f) return
             val miss = keyMiss(gp, cx)
             // ideal path much longer than what the finger drew = extra detours the user didn't make
             val lenRatio = if (userLen > 0.3f) max(0f, idealLen(gp, cx) / userLen - 1.1f) else 0f
@@ -644,6 +648,16 @@ class Dictionary(private val userDir: File?) {
                 for (idx in bucket) consider(gpaths[idx], words[idx], freqs[idx] / 100f, sd, ed)
             }
             if (scores.isNotEmpty()) break
+        }
+        if (scores.isEmpty() && !live) {
+            // the finger started or ended far from any letter (overshoot): look a bit further
+            starts = nearest(ux[0], uy[0], gNear + 0.5f)
+            ends = nearest(ux[N - 1], uy[N - 1], gNear + 0.5f)
+            passRadius = gPass + 0.35f
+            for ((s, sd) in starts) for ((e, ed) in ends) {
+                val bucket = glideBuckets[bucketKey(s, e)] ?: continue
+                for (idx in bucket) consider(gpaths[idx], words[idx], freqs[idx] / 100f, sd, ed)
+            }
         }
         for ((w, c) in userWords) {
             if (c < 2 || exact.containsKey(w)) continue
