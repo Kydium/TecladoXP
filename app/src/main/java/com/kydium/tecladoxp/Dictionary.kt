@@ -312,7 +312,8 @@ class Dictionary(private val userDir: File?) {
         val lw = word.lowercase()
         var b = 0f
         val last = ctx?.substringAfterLast(' ')
-        if (last != null) bigrams[last]?.get(lw)?.let { b += 0.9f * ln(1f + it) }
+        if (last != null) bigrams[last]?.get(lw)?.let { b += 1.3f * ln(1f + it) }
+        if (ctx != null && ctx.contains(' ')) bigrams[ctx]?.get(lw)?.let { b += 1.6f * ln(1f + it) }
         val key = ctx ?: "^"
         var p = 0f
         if (key.contains(' ')) ngrams[key]?.let { p = prob(it, lw) }
@@ -461,7 +462,8 @@ class Dictionary(private val userDir: File?) {
         if (key.contains(' ')) add(ngrams[key], 3f)
         add(ngrams[key.substringAfterLast(' ')], 2f)
         val last = ctx?.substringAfterLast(' ')
-        if (last != null) bigrams[last]?.forEach { (w, c) -> scores[w] = (scores[w] ?: 0f) + 1.1f * ln(1f + c) }
+        if (last != null) bigrams[last]?.forEach { (w, c) -> scores[w] = (scores[w] ?: 0f) + 1.3f * ln(1f + c) }
+        if (ctx != null && ctx.contains(' ')) bigrams[ctx]?.forEach { (w, c) -> scores[w] = (scores[w] ?: 0f) + 1.8f * ln(1f + c) }
         return scores.entries.filter { !blocked(it.key) }
             .sortedByDescending { it.value }.take(3)
             .map { e -> exact[e.key]?.let { words[it] } ?: e.key }
@@ -682,11 +684,41 @@ class Dictionary(private val userDir: File?) {
             val worst = m.entries.minByOrNull { it.value }
             if (worst != null) m.remove(worst.key)
         }
-        if (bigrams.size > 6000) {
+        if (bigrams.size > 20000) {
             val k = bigrams.keys.firstOrNull()
             if (k != null && k != p) bigrams.remove(k)
         }
         dirty = true
+    }
+
+    /**
+     * Learns from a block of your own text (e.g. an exported WhatsApp chat):
+     * your words, which word follows which, and 3-word patterns.
+     * @return number of words learned
+     */
+    @Synchronized
+    fun learnText(text: String): Int {
+        if (!userLoaded) loadUser()
+        val tok = Regex("[\\p{L}]+(?:'[\\p{L}]+)?")
+        var count = 0
+        for (sentence in text.lowercase().split(Regex("[.!?¡¿\\n…]+"))) {
+            var p2: String? = null
+            var p1: String? = null
+            for (m in tok.findAll(sentence)) {
+                val w = m.value
+                if (w.length > 30) { p1 = null; p2 = null; continue }
+                learnWord(w)
+                if (p1 != null) {
+                    learnBigram(p1, w)
+                    if (p2 != null) learnBigram("$p2 $p1", w)
+                }
+                p2 = p1
+                p1 = w
+                count++
+            }
+        }
+        dirty = true
+        return count
     }
 
     private fun loadUser() {

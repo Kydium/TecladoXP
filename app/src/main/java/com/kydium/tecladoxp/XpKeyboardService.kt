@@ -458,7 +458,10 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private fun afterWordCommitted(word: String, kind: WordKind) {
         if (!noLearn && predictionsOn) {
             dict.learnWord(word)
-            prevWord?.let { dict.learnBigram(it, word) }
+            prevWord?.let { p ->
+                dict.learnBigram(p, word)
+                prevWord2?.let { p2 -> dict.learnBigram("$p2 $p", word) }   // 3-word patterns
+            }
         }
         prevWord2 = prevWord
         prevWord = word.lowercase()

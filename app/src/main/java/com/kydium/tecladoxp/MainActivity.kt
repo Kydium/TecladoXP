@@ -72,6 +72,25 @@ class MainActivity : Activity() {
         sv.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         scroll = sv
         setContentView(sv)
+        handleShare(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShare(intent)
+    }
+
+    /** "Exportar chat" → share with Teclado XP. */
+    private fun handleShare(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND) return
+        val uri: Uri? = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM)
+        }
+        if (uri != null) learnFromChat(uri)
+        intent.action = null
     }
 
     override fun onResume() {
@@ -150,6 +169,7 @@ class MainActivity : Activity() {
             TrailStyles.all, "trailstyle") { o, unlocked, selected -> TrailSwatch(this, o, unlocked, selected) }
         renderSettings()
         renderMyWords()
+        renderLearnChats()
         renderTest()
     }
 
@@ -529,6 +549,10 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         val uri = data?.data ?: return
         if (resultCode != RESULT_OK) return
+        if (requestCode == REQ_CHAT) {
+            learnFromChat(uri)
+            return
+        }
         val name = when (requestCode) {
             REQ_ORB -> SoundFx.ORB_FILE
             REQ_LEVEL -> SoundFx.LEVEL_FILE
@@ -757,6 +781,106 @@ class MainActivity : Activity() {
             })
         }
         root.addView(c)
+    }
+
+    // ------------------------------------------------------------ learn from chats
+
+    private val REQ_CHAT = 43
+
+    private fun renderLearnChats() {
+        val c = card()
+        sectionTitle(c, "Aprender de mis chats")
+        c.addView(text(
+            "Para que el teclado adivine como tú escribes, dale tus propios mensajes. En WhatsApp: abre un chat → ⋮ → " +
+                "Más → Exportar chat → Sin archivos, y guárdalo o compártelo con Teclado XP. Luego elige el archivo aquí " +
+                "y dime cuál eres tú: solo aprende de tus mensajes. Todo se queda en tu celular.",
+            12.5f, muted
+        ).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
+        c.addView(button("Elegir chat exportado (.txt o .zip)", true) {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+            try { startActivityForResult(i, REQ_CHAT) } catch (_: Exception) {
+                Toast.makeText(this, "No se pudo abrir el selector de archivos", Toast.LENGTH_SHORT).show()
+            }
+        })
+        root.addView(c)
+    }
+
+    /** Reads a WhatsApp export (.txt, or .zip containing it) and returns its text. */
+    private fun readChat(uri: Uri): String? {
+        return try {
+            val head = contentResolver.openInputStream(uri)?.use { s ->
+                val b = ByteArray(4); val n = s.read(b); if (n == 4) b else null
+            }
+            val isZip = head != null && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()
+            contentResolver.openInputStream(uri)?.use { input ->
+                if (isZip) {
+                    val zip = java.util.zip.ZipInputStream(input)
+                    var e = zip.nextEntry
+                    var text: String? = null
+                    while (e != null) {
+                        if (e.name.endsWith(".txt", true)) { text = zip.readBytes().toString(Charsets.UTF_8); break }
+                        e = zip.nextEntry
+                    }
+                    text
+                } else input.readBytes().toString(Charsets.UTF_8)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Splits a WhatsApp export into (author, message) pairs. */
+    private fun parseChat(text: String): List<Pair<String, String>> {
+        val line = Regex("""^\u200E?\[?\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4},?[\s  ]+\d{1,2}:\d{2}(?::\d{2})?(?:[\s  ]?[aApP]\.?[\s  ]?[mM]\.?)?\]?[\s  ]*[-–]?[\s  ]*([^:]{1,60}):[\s  ](.*)$""")
+        val out = ArrayList<Pair<String, String>>()
+        for (raw in text.split('\n')) {
+            val l = raw.trimEnd('\r')
+            val m = line.find(l)
+            if (m != null) out.add(Pair(m.groupValues[1].trim(), m.groupValues[2]))
+            else if (out.isNotEmpty() && l.isNotBlank()) {
+                val last = out.removeAt(out.size - 1)
+                out.add(Pair(last.first, last.second + "\n" + l))
+            }
+        }
+        val skip = listOf("<multimedia omitido>", "<media omitted>", "se eliminó este mensaje", "this message was deleted",
+            "mensaje eliminado", "null", "<se editó este mensaje.>")
+        return out.filter { (_, msg) -> skip.none { msg.trim().lowercase().contains(it) } && !msg.contains("http") }
+    }
+
+    private fun learnFromChat(uri: Uri) {
+        Toast.makeText(this, "Leyendo el chat…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val text = readChat(uri)
+            val msgs = if (text != null) parseChat(text) else emptyList()
+            runOnUiThread {
+                if (msgs.isEmpty()) {
+                    Toast.makeText(this, "No encontré mensajes. Usa \"Exportar chat\" de WhatsApp (.txt)", Toast.LENGTH_LONG).show()
+                    return@runOnUiThread
+                }
+                val authors = msgs.groupingBy { it.first }.eachCount().entries.sortedByDescending { it.value }.take(12)
+                val names = authors.map { "${it.key}  (${it.value} mensajes)" }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("¿Cuál eres tú?")
+                    .setItems(names) { _, which ->
+                        val me = authors[which].key
+                        val mine = msgs.filter { it.first == me }.joinToString("\n") { it.second }
+                        Thread {
+                            val dict = Dictionary.get(filesDir)
+                            val n = dict.learnText(mine)
+                            dict.saveAsync()
+                            runOnUiThread {
+                                Toast.makeText(this, "Listo ✅ Aprendí de ${authors[which].value} mensajes ($n palabras)", Toast.LENGTH_LONG).show()
+                                render()
+                            }
+                        }.start()
+                    }
+                    .setNegativeButton("Cancelar", null)
+                    .show()
+            }
+        }.start()
     }
 
     private fun renderTest() {
