@@ -5,6 +5,7 @@ import java.io.InputStream
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.ln
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -327,6 +328,31 @@ class Dictionary(private val userDir: File?) {
         return b
     }
 
+    /** Only what *you* typed before in this context (no built-in model). */
+    private fun userCtxBoost(ctx: String?, word: String): Float {
+        val lw = word.lowercase()
+        var b = 0f
+        val last = ctx?.substringAfterLast(' ')
+        if (last != null) bigrams[last]?.get(lw)?.let { b += 1.3f * ln(1f + it) }
+        if (ctx != null && ctx.contains(' ')) bigrams[ctx]?.get(lw)?.let { b += 1.6f * ln(1f + it) }
+        return b
+    }
+
+    /**
+     * Language model: log10 probability of [lw] after [ctx] ("te lo", "funciona", null = start
+     * of sentence), with backoff trigram -> bigram -> word frequency. [zipf] is the word's
+     * frequency (log10 per billion words). A word that never follows the context in the model
+     * is penalized, so "funciona buen" loses against "funciona bien".
+     */
+    private fun lmLog(ctx: String?, lw: String, zipf: Float): Float {
+        val uni = zipf - 9f
+        val key = ctx ?: "^"
+        if (key.contains(' ')) ngrams[key]?.let { n -> val p = prob(n, lw); if (p > 0f) return log10(p) }
+        val n2 = ngrams[key.substringAfterLast(' ')] ?: return uni
+        val p2 = prob(n2, lw)
+        return if (p2 > 0f) log10(0.4f * p2) else uni - 0.8f
+    }
+
     private fun prob(n: Next, w: String): Float {
         for (i in n.words.indices) if (n.words[i] == w) return n.counts[i].toFloat() / n.total
         return 0f
@@ -577,8 +603,8 @@ class Dictionary(private val userDir: File?) {
             val miss = keyMiss(gp, cx)
             // ideal path much longer than what the finger drew = extra detours the user didn't make
             val lenRatio = if (userLen > 0.3f) max(0f, idealLen(gp, cx) / userLen - 1.1f) else 0f
-            val s = freq * gFreq - loc * gLoc - miss * gMiss - min(lenRatio, 1.5f) * gLen - (sd + ed) * gEnds +
-                bigramBoost(prev, display) + userBoost(display) + bonus
+            val s = gFreq * lmLog(prev, display.lowercase(), freq) + 9f * gFreq - loc * gLoc - miss * gMiss -
+                min(lenRatio, 1.5f) * gLen - (sd + ed) * gEnds + userCtxBoost(prev, display) + userBoost(display) + bonus
             val old = scores[display]
             if (old == null || s > old) scores[display] = s
         }
@@ -617,8 +643,9 @@ class Dictionary(private val userDir: File?) {
                     val m = partialMatch(gp, cx, ex0, ey0) ?: continue
                     val (loc, done) = m
                     if (loc > 1.0f) continue
-                    val sc = freqs[idx] / 100f * gFreq - loc * gLoc - sd * gEnds - 0.08f * (gp.length - done) +
-                        bigramBoost(prev, display) + userBoost(display) + (personal[display.lowercase()] ?: 0f)
+                    val sc = gFreq * lmLog(prev, display.lowercase(), freqs[idx] / 100f) + 9f * gFreq - loc * gLoc -
+                        sd * gEnds - 0.08f * (gp.length - done) + userCtxBoost(prev, display) + userBoost(display) +
+                        (personal[display.lowercase()] ?: 0f)
                     val old = scores[display]
                     if (old == null || sc > old) scores[display] = sc
                 }
@@ -634,7 +661,7 @@ class Dictionary(private val userDir: File?) {
             val display = exact[w]?.let { words[it] } ?: w
             if (!scores.containsKey(display)) {
                 val f = exact[w]?.let { freqs[it] / 100f } ?: 4.5f
-                scores[display] = f * gFreq + b - 3f + bigramBoost(prev, display)
+                scores[display] = gFreq * lmLog(prev, w, f) + 9f * gFreq + b - 3f + userCtxBoost(prev, display)
             }
         }
         return scores.entries.sortedByDescending { it.value }.take(4).map { it.key }

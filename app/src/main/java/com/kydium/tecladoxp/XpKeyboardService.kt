@@ -750,6 +750,12 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         lastGlideX = null; lastGlideY = null
         if (noLearn) return
         dict.learnGlide(word, x, y, x.size, v.unitW, v.keyRowH)
+        // also learn where your finger passes for each key while swiping
+        if (v.unitW > 0f && v.keyRowH > 0f) {
+            val raw = HashMap<Char, FloatArray>()
+            for ((k, c) in v.rawLetterCenters()) raw[k] = floatArrayOf(c[0] / v.unitW, c[1] / v.keyRowH)
+            TouchModel.learnGlide(word, FloatArray(x.size) { x[it] / v.unitW }, FloatArray(y.size) { y[it] / v.keyRowH }, raw)
+        }
     }
     private var glideSeq = 0
 

@@ -68,6 +68,39 @@ object TouchModel {
         if (++dirty >= 5) save()
     }
 
+    /**
+     * Learns from a swipe you kept: for each letter of the word, the point of your path that
+     * passed closest to that key tells how far from the key center you usually go.
+     * @param xs,ys your path in key units; @param centers real key centers in key units
+     */
+    fun learnGlide(word: String, xs: FloatArray, ys: FloatArray, centers: Map<Char, FloatArray>) {
+        val letters = Dictionary.dedupe(Dictionary.glideNorm(word))
+        if (letters.length < 2 || xs.size < 2) return
+        var j = 0
+        val samples = ArrayList<Pair<Char, FloatArray>>()
+        for (ch in letters) {
+            val c = centers[ch] ?: return
+            var best = -1
+            var bd = Float.MAX_VALUE
+            for (i in j until xs.size) {
+                val d = (xs[i] - c[0]) * (xs[i] - c[0]) + (ys[i] - c[1]) * (ys[i] - c[1])
+                if (d < bd) { bd = d; best = i }
+            }
+            if (best < 0 || bd > 1.0f) return          // path never really got there: don't learn
+            samples.add(Pair(ch, floatArrayOf(xs[best] - c[0], ys[best] - c[1])))
+            j = best + 1
+            if (j >= xs.size) j = xs.size - 1
+        }
+        for ((ch, o) in samples) {
+            val k = (n[ch] ?: 0) + 1
+            val a = max(0.03f, 1f / k)
+            dx[ch] = ((dx[ch] ?: 0f) * (1 - a) + o[0] * a).coerceIn(-MAX_SHIFT, MAX_SHIFT)
+            dy[ch] = ((dy[ch] ?: 0f) * (1 - a) + o[1] * a).coerceIn(-MAX_SHIFT, MAX_SHIFT)
+            n[ch] = k
+        }
+        if (++dirty >= 5) save()
+    }
+
     fun save() {
         val p = prefs ?: return
         dirty = 0
