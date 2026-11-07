@@ -54,6 +54,8 @@ class Dictionary(private val userDir: File?) {
      * these gets a big bonus for that word — it learns *your* way of swiping.
      */
     private val templates = LinkedHashMap<String, ArrayList<FloatArray>>()
+    /** Off while tuning the weights, so the swipes you taught it don't hide what the weights do. */
+    @Volatile var usePersonal = true
     private val maxTemplateWords = 400
     private val templatesPerWord = 3
     @Volatile private var dirty = false
@@ -602,7 +604,7 @@ class Dictionary(private val userDir: File?) {
         resample(nx, ny, cnt, ux, uy)
         // personal shapes: how close is this swipe to ones you made before?
         val personal = HashMap<String, Float>()
-        for ((w, list) in templates) {
+        if (usePersonal) for ((w, list) in templates) {
             var best = Float.MAX_VALUE
             for (t in list) {
                 var sum = 0f

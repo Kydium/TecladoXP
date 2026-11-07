@@ -190,6 +190,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         XpManager.init(this)
         TouchModel.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        Tuner.load(settings)
         clipboard = getSystemService(ClipboardManager::class.java)
         loadClips()
         try { clipboard?.addPrimaryClipChangedListener(clipListener) } catch (_: Exception) {}

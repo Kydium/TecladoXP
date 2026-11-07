@@ -66,6 +66,7 @@ class MainActivity : Activity() {
         CrashLog.init(this)
         XpManager.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        Tuner.load(settings)
         val sv = ScrollView(this)
         sv.setBackgroundColor(bg)
         sv.isFillViewport = true
@@ -103,7 +104,7 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && !training) render()
+        if (hasFocus && !training && !tuning) render()
     }
 
     override fun onPause() {
@@ -1050,6 +1051,28 @@ class MainActivity : Activity() {
             ).apply { setPadding(0, 0, 0, dpi(10f)) })
             c.addView(button("Empezar a entrenar", true) { startTraining() },
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            // improve the recognizer itself with the saved swipes
+            val tuneInfo = text(
+                when {
+                    tuning -> "⚙️ Probando ajustes con tus deslizadas…"
+                    n < Tuner.MIN_SAMPLES -> "⚙️ Con ${Tuner.MIN_SAMPLES} deslizadas guardadas podrás mejorar el reconocimiento con tus propios trazos (llevas $n)."
+                    else -> "⚙️ Ajusta el reconocedor a tu forma de deslizar usando tus $n deslizadas." +
+                        (settings.getString("tune_result", null)?.let { "\nÚltimo ajuste: $it" } ?: "")
+                }, 12.5f, muted
+            ).apply { setPadding(0, dpi(14f), 0, dpi(6f)); setLineSpacing(dp(2f), 1f) }
+            tuneStatus = tuneInfo
+            c.addView(tuneInfo)
+            if (n >= Tuner.MIN_SAMPLES && !tuning) {
+                val trow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                trow.addView(button("Mejorar con mis datos", true) { startTuning() },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(3f) })
+                if (Tuner.isTuned(settings)) trow.addView(button("Restablecer", false) {
+                    Tuner.reset(settings)
+                    Toast.makeText(this, "Volviste a los ajustes de fábrica", Toast.LENGTH_SHORT).show()
+                    render()
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dpi(3f) })
+                c.addView(trow)
+            }
             if (n > 0) {
                 val row = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -1111,7 +1134,43 @@ class MainActivity : Activity() {
         root.addView(c)
     }
 
+    private var tuning = false
+    private var tuneStatus: TextView? = null
+
+    private fun startTuning() {
+        if (tuning || training) return
+        tuning = true
+        render()
+        val dict = Dictionary.get(filesDir)
+        Thread {
+            if (!dict.loaded) try {
+                // the keyboard isn't running in this moment: load the dictionary here
+                val lang = settings.getString("lang", "es") ?: "es"
+                val src = ArrayList<Pair<java.io.InputStream, Int>>()
+                val ng = ArrayList<java.io.InputStream>()
+                if (lang != "en") { src.add(Pair(assets.open("es.txt"), 0)); ng.add(assets.open("ngram_es.txt")) }
+                if (lang != "es") { src.add(Pair(assets.open("en.txt"), if (lang == "en") 0 else -30)); ng.add(assets.open("ngram_en.txt")) }
+                dict.load(src, ng, lang)
+                src.forEach { it.first.close() }; ng.forEach { it.close() }
+            } catch (e: Exception) { CrashLog.log(e, "ajuste") }
+            val r = Tuner.run(dict, settings) { done, total ->
+                runOnUiThread { tuneStatus?.text = "⚙️ Probando ajustes con tus deslizadas… ${100 * done / total}%" }
+            }
+            runOnUiThread {
+                tuning = false
+                val msg = when {
+                    r == null -> "No se pudo ajustar (faltan datos)"
+                    r.after > r.before -> "✅ Acierta más: ${100 * r.before / r.total}% → ${100 * r.after / r.total}% de tus deslizadas"
+                    else -> "Ya estaba en su mejor punto para tus trazos (${100 * r.before / r.total}%)"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                render()
+            }
+        }.start()
+    }
+
     private fun startTraining() {
+        if (tuning) return
         val dict = Dictionary.get(filesDir)
         dict.ensureUser()
         val pool = LinkedHashSet<String>()

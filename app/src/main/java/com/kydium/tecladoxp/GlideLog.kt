@@ -165,6 +165,31 @@ object GlideLog {
             add(word, pendingCands, pendingCtx, 'u', p)
     }
 
+    class Sample(val label: String, val ctx: String?, val x: FloatArray, val y: FloatArray)
+
+    /** The saved swipes and the key centers they were made with (null if there are none). */
+    @Synchronized
+    fun samples(): Pair<Map<Char, FloatArray>, List<Sample>>? {
+        ensure()
+        val cen = HashMap<Char, FloatArray>()
+        for (t in centers.split(' ')) {
+            val k = t.split(':')
+            if (k.size != 2 || k[0].isEmpty()) continue
+            val v = k[1].split(',').mapNotNull { it.toFloatOrNull() }
+            if (v.size == 2) cen[k[0][0]] = floatArrayOf(v[0], v[1])
+        }
+        if (cen.size < 20) return null
+        val out = ArrayList<Sample>()
+        for (l in lines) {
+            val t = l.split('\t')
+            if (t.size < 5) continue
+            val pts = t[4].split(';').map { p -> p.split(',').mapNotNull { it.toFloatOrNull() } }.filter { it.size == 2 }
+            if (pts.size < 2) continue
+            out.add(Sample(t[0], t[2].ifEmpty { null }, FloatArray(pts.size) { pts[it][0] }, FloatArray(pts.size) { pts[it][1] }))
+        }
+        return Pair(cen, out)
+    }
+
     /** Everything as one code to copy and send (gzip + base64). */
     @Synchronized
     fun export(appVersion: String, lang: String): String {
