@@ -40,8 +40,36 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         fun onSettings()
         fun onClipPick(index: Int)
         fun onClipDelete(index: Int)
+        /** Pin / unpin a clipboard item (pinned ones stay until you remove them). */
+        fun onClipPin(index: Int)
         fun onClipClear()
-        fun onPressFeedback()
+        /** Paste the text you just copied (the chip in the suggestion bar). */
+        fun onClipChip()
+        /** Text editing panel: arrows, select, copy, paste… ([selecting] = extend the selection). */
+        fun onEditAction(action: Int, selecting: Boolean)
+        /** One-handed mode changed: 0 off, 1 left, 2 right. */
+        fun onOneHand(mode: Int)
+        /** Vibration / click when a key is pressed ([code] = key code, 0 for other buttons). */
+        fun onPressFeedback(code: Int)
+        /** Long-press on a suggestion and confirm: don't suggest [word] anymore. */
+        fun onSuggestionRemove(word: String)
+    }
+
+    companion object {
+        const val E_LEFT = 1
+        const val E_RIGHT = 2
+        const val E_UP = 3
+        const val E_DOWN = 4
+        const val E_HOME = 5
+        const val E_END = 6
+        const val E_SELECT = 7
+        const val E_SELALL = 8
+        const val E_COPY = 9
+        const val E_CUT = 10
+        const val E_PASTE = 11
+        const val E_UNDO = 12
+        const val E_DEL = 13
+        const val E_BACK = 14
     }
 
     // ------------------------------------------------------------------ config
@@ -56,17 +84,46 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     var showHints = true
     var glideEnabled = true
     var showFloatingXp = true
+    /** Bubble above the key while you press it. */
+    var showPreview = true
     var longPressMs = 320L
     var xpStyle = "clasica"
         set(v) { field = v; invalidate() }
     var trailStyle = "clasica"
     val renderer = StyleRenderer(resources.displayMetrics)
 
-    private val letters = Layouts.letters()
+    private var letters = Layouts.letters()
     private val symbols = Layouts.symbols()
     private val symbols2 = Layouts.symbols2()
     var layout: KbLayout = letters
         private set
+
+    /** Row of numbers above the letters. */
+    var numberRow = false
+        set(v) {
+            if (field == v) return
+            field = v
+            val wasLetters = layout === letters
+            letters = Layouts.letters(v)
+            if (wasLetters) layout = letters
+            if (width > 0) relayout(width, height)
+            requestLayout()
+            invalidate()
+        }
+
+    /** One-handed mode: 0 off, 1 keys on the left, 2 keys on the right. */
+    var oneHand = 0
+        set(v) {
+            if (field == v) return
+            field = v
+            if (width > 0) relayout(width, height)
+            invalidate()
+        }
+    /** Side used when you turn one-handed mode on from the toolbar. */
+    var oneHandSide = 2
+    private val oneHandFrac = 0.80f
+    private fun kbWidth(w: Float) = if (oneHand > 0) w * oneHandFrac else w
+    private fun kbLeft(w: Float) = if (oneHand == 2) w - kbWidth(w) else 0f
 
     /** 0 = off, 1 = shift once, 2 = caps lock */
     var shiftState = 0
@@ -119,7 +176,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val rect = RectF()
 
     // ------------------------------------------------------------------ touch state
-    private enum class Mode { NONE, PRESS, POPUP, GLIDE, CURSOR, DELSWIPE, STRIP, EMOJI, CLIP }
+    private enum class Mode { NONE, PRESS, POPUP, GLIDE, CURSOR, DELSWIPE, STRIP, EMOJI, CLIP, EDIT }
 
     private var mode = Mode.NONE
     private var activeId = -1
@@ -172,9 +229,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     // ================================================================== public API
 
     fun setLayout(type: LayoutType) {
+        removeAsk = null
         emojiMode = false
         voiceMode = false
         clipMode = false
+        editMode = false
         layout = when (type) {
             LayoutType.LETTERS -> letters
             LayoutType.SYMBOLS -> symbols
@@ -210,6 +269,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         if (emojiCats.isEmpty()) loadEmojis()
         emojiMode = true
         clipMode = false
+        editMode = false
         emojiCat = if (recents.isNotEmpty()) 0 else 1
         emojiScroll = 0f
         emojiVel = 0f
@@ -267,7 +327,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         k.top = emojiGridTop + row * emojiCellH - emojiScroll
         k.bottom = k.top + emojiCellH
         openPopup(k)
-        listener.onPressFeedback()
+        listener.onPressFeedback(0)
         invalidate()
     }
 
@@ -355,19 +415,41 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     var clipMode = false
         private set
     private var clips: List<String> = emptyList()
+    private var clipPinned: Set<String> = emptySet()
     private var clipScroll = 0f
     private var clipScrolled = false
     private val clipHeaderH get() = dp(42f)
     private val clipItemH get() = dp(54f)
 
-    fun setClips(list: List<String>) {
+    fun setClips(list: List<String>, pinned: Set<String> = emptySet()) {
         clips = list
+        clipPinned = pinned
         clipScroll = clipScroll.coerceIn(0f, clipMaxScroll())
         invalidate()
     }
 
+    private fun drawPinIcon(c: Canvas, cx: Float, cy: Float, s: Float, color: Int, filled: Boolean) {
+        linePaint.shader = null
+        linePaint.color = color
+        linePaint.strokeWidth = dp(1.6f)
+        linePaint.strokeCap = Paint.Cap.ROUND
+        c.save()
+        c.rotate(35f, cx, cy)
+        // head
+        linePaint.style = if (filled) Paint.Style.FILL else Paint.Style.STROKE
+        rect.set(cx - s * 0.45f, cy - s, cx + s * 0.45f, cy - s * 0.15f)
+        c.drawRoundRect(rect, s * 0.15f, s * 0.15f, linePaint)
+        linePaint.style = Paint.Style.STROKE
+        c.drawLine(cx - s * 0.75f, cy - s * 0.1f, cx + s * 0.75f, cy - s * 0.1f, linePaint)
+        // needle
+        c.drawLine(cx, cy - s * 0.1f, cx, cy + s, linePaint)
+        c.restore()
+        linePaint.style = Paint.Style.FILL
+    }
+
     fun showClipboard() {
         emojiMode = false
+        editMode = false
         clipMode = true
         clipScroll = 0f
         cancelGesture()
@@ -418,7 +500,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         textPaint.color = t.text
         c.drawText("ABC", dp(32f), top + clipHeaderH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
         c.drawText("Portapapeles", w / 2f, top + clipHeaderH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
-        if (clips.isNotEmpty()) {
+        if (clips.any { it !in clipPinned }) {
             textPaint.typeface = Typeface.DEFAULT
             textPaint.textSize = sp(12.5f)
             textPaint.color = t.accent2
@@ -432,6 +514,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             textPaint.textSize = sp(13f)
             textPaint.color = t.textMuted
             c.drawText("Copia algo y aparecerá aquí", w / 2f, listTop + dp(60f), textPaint)
+            textPaint.textSize = sp(12f)
+            c.drawText("Fija con el alfiler lo que quieras guardar siempre", w / 2f, listTop + dp(84f), textPaint)
         }
         clips.forEachIndexed { i, clip ->
             val y0 = listTop + i * clipItemH - clipScroll
@@ -441,11 +525,13 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             rect.set(dp(8f), y0 + dp(3f), w - dp(8f), y0 + clipItemH - dp(3f))
             c.drawRoundRect(rect, dp(10f), dp(10f), keyPaint)
             val one = clip.replace('\n', ' ').trim()
+            val pinned = clip in clipPinned
+            drawPinIcon(c, w - dp(78f), rect.centerY(), dp(7f), if (pinned) t.accent2 else t.textMuted, pinned)
             textPaint.typeface = Typeface.DEFAULT
             textPaint.textSize = sp(14f)
             textPaint.color = t.text
             textPaint.textAlign = Paint.Align.LEFT
-            val maxW = w - dp(70f)
+            val maxW = w - dp(114f)
             var shown = one
             if (textPaint.measureText(shown) > maxW) {
                 while (shown.isNotEmpty() && textPaint.measureText("$shown…") > maxW) shown = shown.dropLast(1)
@@ -465,15 +551,347 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val w = width.toFloat()
         if (y < topH + clipHeaderH) {
             when {
-                x < dp(70f) -> { listener.onPressFeedback(); listener.onKey(Key("ABC", Codes.LETTERS)) }
-                x > w - dp(100f) && clips.isNotEmpty() -> { listener.onPressFeedback(); listener.onClipClear() }
+                x < dp(70f) -> { listener.onPressFeedback(0); listener.onKey(Key("ABC", Codes.LETTERS)) }
+                x > w - dp(100f) && clips.any { it !in clipPinned } -> { listener.onPressFeedback(0); listener.onClipClear() }
             }
             return
         }
         val i = ((y - topH - clipHeaderH + clipScroll) / clipItemH).toInt()
         if (i !in clips.indices) return
-        listener.onPressFeedback()
-        if (x > w - dp(56f)) listener.onClipDelete(i) else listener.onClipPick(i)
+        listener.onPressFeedback(0)
+        when {
+            x > w - dp(56f) -> listener.onClipDelete(i)
+            x > w - dp(102f) -> listener.onClipPin(i)
+            else -> listener.onClipPick(i)
+        }
+    }
+
+    // ------------------------------------------------------------------ toolbar / paste chip
+    /** The service asks for the toolbar (field empty, nothing typed yet, text selected…). */
+    private var toolbarWanted = false
+    /** Set when you tap the toolbar button; cleared when you start typing. */
+    private var toolbarManual: Boolean? = null
+    /** Text you just copied, offered as a chip to paste it with one tap. */
+    private var clipChip: String? = null
+    private val sideW get() = dp(44f)
+    private val toolCount = 4
+
+    fun setStrip(toolbar: Boolean, chip: String?) {
+        if (toolbarWanted == toolbar && clipChip == chip) return
+        toolbarWanted = toolbar
+        clipChip = chip
+        invalidate()
+    }
+
+    fun clearToolbarOverride() {
+        if (toolbarManual != null) {
+            toolbarManual = null
+            invalidate()
+        }
+    }
+
+    /** What the first row shows: 0 suggestions, 1 toolbar, 2 paste chip. */
+    private fun stripContent(): Int {
+        if (clipMode || editMode) return 1   // panel open: its toolbar icon shows it (tap again to close)
+        val hasSug = suggestions.any { it.isNotEmpty() }
+        return when (toolbarManual) {
+            true -> 1
+            false -> if (hasSug) 0 else if (clipChip != null) 2 else 1
+            else -> when {
+                clipChip != null -> 2
+                toolbarWanted || !hasSug -> 1
+                else -> 0
+            }
+        }
+    }
+
+    private fun toolCellW() = (width - sideW * 2) / toolCount
+
+    private fun drawToolbarButton(c: Canvas, cx: Float, cy: Float, t: KbTheme, active: Boolean) {
+        val pressed = mode == Mode.STRIP && stripPressed == -6
+        if (active || pressed) {
+            keyPaint.shader = null
+            keyPaint.color = if (active) t.accent else t.keyPressed
+            c.drawCircle(cx, cy, dp(15f), keyPaint)
+        }
+        // 2x2 grid of rounded squares
+        val col = if (active) Color.WHITE else t.text
+        keyPaint.shader = null
+        keyPaint.color = col
+        val s = dp(4.2f)
+        val g = dp(1.6f)
+        for (i in 0..1) for (j in 0..1) {
+            val l = cx - g / 2f - s + i * (s + g)
+            val tp = cy - g / 2f - s + j * (s + g)
+            rect.set(l, tp, l + s, tp + s)
+            c.drawRoundRect(rect, dp(1.3f), dp(1.3f), keyPaint)
+        }
+    }
+
+    private fun drawToolbar(c: Canvas, t: KbTheme) {
+        val cw = toolCellW()
+        val cy = sugH / 2f
+        for (i in 0 until toolCount) {
+            val cx = sideW + cw * (i + 0.5f)
+            val active = when (i) {
+                0 -> clipMode
+                1 -> editMode
+                2 -> oneHand > 0
+                else -> false
+            }
+            val pressed = mode == Mode.STRIP && stripPressed == -10 - i
+            if (active || pressed) {
+                keyPaint.shader = null
+                keyPaint.color = if (active) t.accent else t.keyPressed
+                c.drawCircle(cx, cy, dp(15f), keyPaint)
+            }
+            val col = if (active) Color.WHITE else t.text
+            when (i) {
+                0 -> drawClipIcon(c, cx, cy, dp(8f), col)
+                1 -> drawCursorIcon(c, cx, cy, dp(8f), col)
+                2 -> drawOneHandIcon(c, cx, cy, dp(8f), col)
+                else -> drawGearIcon(c, cx, cy, dp(8f), col)
+            }
+        }
+    }
+
+    private fun drawChip(c: Canvas, t: KbTheme) {
+        val chip = clipChip ?: return
+        val l = sideW + dp(4f)
+        val maxR = width - sideW - dp(4f)
+        textPaint.typeface = Typeface.DEFAULT
+        textPaint.textSize = sp(14f)
+        val one = chip.replace('\n', ' ').trim()
+        val maxText = maxR - l - dp(44f)
+        var shown = one
+        if (textPaint.measureText(shown) > maxText) {
+            while (shown.isNotEmpty() && textPaint.measureText("$shown…") > maxText) shown = shown.dropLast(1)
+            shown = "$shown…"
+        }
+        val r = min(maxR, l + dp(40f) + textPaint.measureText(shown))
+        val pressed = mode == Mode.STRIP && stripPressed == -7
+        rect.set(l, dp(3f), r, sugH - dp(3f))
+        keyPaint.shader = null
+        keyPaint.color = if (pressed) t.keyPressed else withAlpha(t.accent, 70)
+        c.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, keyPaint)
+        linePaint.shader = null
+        linePaint.style = Paint.Style.STROKE
+        linePaint.strokeWidth = dp(1f)
+        linePaint.color = withAlpha(t.accent, 200)
+        c.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, linePaint)
+        linePaint.style = Paint.Style.FILL
+        drawClipIcon(c, l + dp(17f), sugH / 2f, dp(6.5f), t.text)
+        textPaint.color = t.text
+        textPaint.textAlign = Paint.Align.LEFT
+        c.drawText(shown, l + dp(30f), sugH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        textPaint.textAlign = Paint.Align.CENTER
+    }
+
+    /** Text cursor (I-beam) with little arrows: the text editing panel. */
+    private fun drawCursorIcon(c: Canvas, cx: Float, cy: Float, s: Float, color: Int) {
+        linePaint.shader = null
+        linePaint.color = color
+        linePaint.style = Paint.Style.STROKE
+        linePaint.strokeWidth = dp(1.7f)
+        linePaint.strokeCap = Paint.Cap.ROUND
+        c.drawLine(cx, cy - s, cx, cy + s, linePaint)
+        c.drawLine(cx - s * 0.35f, cy - s, cx + s * 0.35f, cy - s, linePaint)
+        c.drawLine(cx - s * 0.35f, cy + s, cx + s * 0.35f, cy + s, linePaint)
+        linePaint.style = Paint.Style.FILL
+        triangle(c, cx - s * 1.25f, cy, s * 0.42f, 180f, color)
+        triangle(c, cx + s * 1.25f, cy, s * 0.42f, 0f, color)
+    }
+
+    /** Small keyboard pushed to one side: one-handed mode. */
+    private fun drawOneHandIcon(c: Canvas, cx: Float, cy: Float, s: Float, color: Int) {
+        linePaint.shader = null
+        linePaint.color = color
+        linePaint.style = Paint.Style.STROKE
+        linePaint.strokeWidth = dp(1.5f)
+        rect.set(cx - s * 1.2f, cy - s * 0.8f, cx + s * 1.2f, cy + s * 0.8f)
+        c.drawRoundRect(rect, s * 0.25f, s * 0.25f, linePaint)
+        linePaint.style = Paint.Style.FILL
+        rect.set(cx - s * 0.2f, cy - s * 0.5f, cx + s * 0.95f, cy + s * 0.5f)
+        c.drawRoundRect(rect, s * 0.15f, s * 0.15f, linePaint)
+        triangle(c, cx - s * 0.7f, cy, s * 0.32f, 180f, color)
+    }
+
+    private val triPath = android.graphics.Path()
+
+    /** Filled triangle pointing at [angle] degrees (0 = right, 90 = down, 180 = left, 270 = up). */
+    private fun triangle(c: Canvas, cx: Float, cy: Float, r: Float, angle: Float, color: Int) {
+        keyPaint.shader = null
+        keyPaint.color = color
+        c.save()
+        c.rotate(angle, cx, cy)
+        triPath.reset()
+        triPath.moveTo(cx + r, cy)
+        triPath.lineTo(cx - r * 0.6f, cy - r * 0.95f)
+        triPath.lineTo(cx - r * 0.6f, cy + r * 0.95f)
+        triPath.close()
+        c.drawPath(triPath, keyPaint)
+        c.restore()
+    }
+
+    // ------------------------------------------------------------------ text editing panel
+    var editMode = false
+        private set
+    private var editSelecting = false
+    private var editPressed: ECell? = null
+
+    private class ECell(val action: Int, val label: String, val col: Int, val row: Int, val span: Int = 1) {
+        val repeats get() = action in listOf(E_LEFT, E_RIGHT, E_UP, E_DOWN, E_DEL)
+    }
+
+    private val editCells = listOf(
+        ECell(E_HOME, "⇤", 0, 0), ECell(E_UP, "", 1, 0), ECell(E_END, "⇥", 2, 0), ECell(E_SELALL, "Seleccionar todo", 3, 0),
+        ECell(E_LEFT, "", 0, 1), ECell(E_SELECT, "Seleccionar", 1, 1), ECell(E_RIGHT, "", 2, 1), ECell(E_COPY, "Copiar", 3, 1),
+        ECell(E_UNDO, "Deshacer", 0, 2), ECell(E_DOWN, "", 1, 2), ECell(E_DEL, "⌫", 2, 2), ECell(E_CUT, "Cortar", 3, 2),
+        ECell(E_BACK, "ABC", 0, 3, span = 3), ECell(E_PASTE, "Pegar", 3, 3)
+    )
+
+    fun showEditPanel() {
+        emojiMode = false
+        clipMode = false
+        editMode = true
+        editSelecting = false
+        cancelGesture()
+        invalidate()
+    }
+
+    /** Bounds of a cell (without the gap between keys) into [rect]. */
+    private fun editBounds(cell: ECell) {
+        val w = width.toFloat()
+        val top = topH + padY
+        val rh = (height - padY - top) / 4f
+        val colW = (w - padX * 2) * 0.22f
+        val l = padX + colW * min(cell.col, 3)
+        val r = if (cell.col < 3) l + colW * cell.span else w - padX
+        rect.set(l, top + rh * cell.row, r, top + rh * (cell.row + 1))
+    }
+
+    private fun editCellAt(x: Float, y: Float): ECell? {
+        for (cell in editCells) {
+            editBounds(cell)
+            if (rect.contains(x, y)) return cell
+        }
+        return null
+    }
+
+    private fun drawEditPanel(c: Canvas, t: KbTheme) {
+        val gapX = dp(3f)
+        val gapY = dp(4.5f)
+        val radius = dp(7f)
+        for (cell in editCells) {
+            editBounds(cell)
+            rect.set(rect.left + gapX / 2f, rect.top + gapY / 2f, rect.right - gapX / 2f, rect.bottom - gapY / 2f)
+            val active = cell.action == E_SELECT && editSelecting
+            val base = if (cell.col == 3 || cell.action == E_BACK || cell.action == E_UNDO) t.keySpecial else t.key
+            keyPaint.shader = null
+            keyPaint.color = darker(base)
+            rect.offset(0f, dp(1.2f))
+            c.drawRoundRect(rect, radius, radius, keyPaint)
+            rect.offset(0f, -dp(1.2f))
+            keyPaint.color = when {
+                editPressed === cell && mode == Mode.EDIT -> t.keyPressed
+                active -> t.accent
+                else -> base
+            }
+            c.drawRoundRect(rect, radius, radius, keyPaint)
+            val col = if (active) Color.WHITE else t.text
+            val cx = rect.centerX()
+            val cy = rect.centerY()
+            val ar = min(rect.height(), rect.width()) * 0.16f
+            when (cell.action) {
+                E_UP -> triangle(c, cx, cy, ar, 270f, col)
+                E_DOWN -> triangle(c, cx, cy, ar, 90f, col)
+                E_LEFT -> triangle(c, cx, cy, ar, 180f, col)
+                E_RIGHT -> triangle(c, cx, cy, ar, 0f, col)
+                else -> {
+                    textPaint.color = col
+                    if (cell.label.length <= 3) {
+                        textPaint.typeface = if (cell.action == E_BACK) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                        textPaint.textSize = sp(if (cell.action == E_BACK) 14f else 20f)
+                    } else {
+                        textPaint.typeface = Typeface.DEFAULT
+                        fitText(cell.label, rect.width() - dp(10f), 13.5f)
+                    }
+                    c.drawText(cell.label, cx, cy - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+                }
+            }
+        }
+        textPaint.typeface = Typeface.DEFAULT
+    }
+
+    private val editRepeat = object : Runnable {
+        override fun run() {
+            val cell = editPressed ?: return
+            if (mode != Mode.EDIT) return
+            fireEdit(cell)
+            postDelayed(this, 60)
+        }
+    }
+
+    private fun fireEdit(cell: ECell) {
+        when (cell.action) {
+            E_SELECT -> editSelecting = !editSelecting
+            E_BACK -> listener.onKey(Key("ABC", Codes.LETTERS))
+            else -> {
+                listener.onEditAction(cell.action, editSelecting)
+                when (cell.action) {
+                    E_SELALL -> editSelecting = true
+                    E_COPY, E_CUT, E_PASTE, E_DEL, E_UNDO -> editSelecting = false
+                }
+            }
+        }
+        invalidate()
+    }
+
+    // ------------------------------------------------------------------ one-handed side panel
+    /** 0 = not on the side panel, -1 = side panel (no button), 1 = expand, 2 = move to the other side. */
+    private fun oneHandHit(x: Float, y: Float): Int {
+        if (oneHand == 0 || y < topH) return 0
+        val w = width.toFloat()
+        val kw = kbWidth(w)
+        val inPanel = if (oneHand == 1) x >= kw else x < w - kw
+        if (!inPanel) return 0
+        val mid = topH + (height - topH) / 2f
+        return if (y < mid) 1 else 2
+    }
+
+    private fun drawOneHandPanel(c: Canvas, t: KbTheme) {
+        val w = width.toFloat()
+        val kw = kbWidth(w)
+        val pl = if (oneHand == 1) kw else 0f
+        val pr = if (oneHand == 1) w else w - kw
+        val cx = (pl + pr) / 2f
+        val area = height - topH
+        val r = min(dp(21f), (pr - pl) / 2f - dp(5f))
+        for (b in 1..2) {
+            val cy = topH + area * (if (b == 1) 0.32f else 0.68f)
+            keyPaint.shader = null
+            keyPaint.color = t.keySpecial
+            c.drawCircle(cx, cy, r, keyPaint)
+            if (b == 1) {
+                // expand: double arrow
+                linePaint.shader = null
+                linePaint.color = t.text
+                linePaint.style = Paint.Style.STROKE
+                linePaint.strokeWidth = dp(1.8f)
+                c.drawLine(cx - r * 0.45f, cy, cx + r * 0.45f, cy, linePaint)
+                linePaint.style = Paint.Style.FILL
+                triangle(c, cx - r * 0.5f, cy, r * 0.22f, 180f, t.text)
+                triangle(c, cx + r * 0.5f, cy, r * 0.22f, 0f, t.text)
+            } else {
+                // move the keys to this side
+                triangle(c, cx, cy, r * 0.3f, if (oneHand == 2) 180f else 0f, t.text)
+            }
+        }
+        textPaint.typeface = Typeface.DEFAULT
+        textPaint.textSize = sp(10f)
+        textPaint.color = t.textMuted
+        c.drawText("Ampliar", cx, topH + area * 0.32f + r + dp(14f), textPaint)
+        c.drawText("Mover", cx, topH + area * 0.68f + r + dp(14f), textPaint)
     }
 
     // ------------------------------------------------------------------ voice typing
@@ -560,7 +978,62 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     fun setSuggestions(s: List<String>, bold: Int) {
         suggestions = if (s.size >= 3) s.take(3) else s + List(3 - s.size) { "" }
         boldIndex = bold
+        if (removeAsk != null && removeAsk !in suggestions) removeAsk = null
         invalidate()
+    }
+
+    /** Emoji picked from the suggestion bar also goes to the recent emojis. */
+    fun addRecentEmoji(e: String) {
+        if (emojiCats.isEmpty()) loadEmojis()
+        addRecent(e)
+    }
+
+    // ---- "remove this suggestion?" (long-press on a suggestion)
+    private var removeAsk: String? = null
+
+    private val sugLongPress = Runnable {
+        val i = stripPressed
+        if (mode == Mode.STRIP && i in 0..2 && stripContent() == 0) {
+            val w = suggestions[i]
+            if (w.any { it.isLetter() }) {
+                removeAsk = w
+                mode = Mode.NONE      // releasing the finger won't pick it
+                stripPressed = -1
+                listener.onPressFeedback(0)
+                invalidate()
+            }
+        }
+    }
+
+    private fun drawRemoveAsk(c: Canvas, t: KbTheme, word: String) {
+        val w = width.toFloat()
+        val cy = sugH / 2f
+        // [ Quitar ] [ ✕ ] on the right, question on the left
+        val cancelL = w - dp(46f)
+        val quitR = cancelL - dp(4f)
+        val quitL = quitR - dp(84f)
+        keyPaint.shader = null
+        keyPaint.color = if (mode == Mode.STRIP && stripPressed == -20) t.keyPressed else t.accent
+        rect.set(quitL, dp(4f), quitR, sugH - dp(4f))
+        c.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, keyPaint)
+        textPaint.typeface = Typeface.DEFAULT_BOLD
+        textPaint.textSize = sp(13f)
+        textPaint.color = Color.WHITE
+        c.drawText("Quitar", rect.centerX(), cy - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        if (mode == Mode.STRIP && stripPressed == -21) {
+            keyPaint.color = t.keyPressed
+            c.drawCircle(w - dp(23f), cy, dp(14f), keyPaint)
+        }
+        textPaint.typeface = Typeface.DEFAULT
+        textPaint.textSize = sp(16f)
+        textPaint.color = t.text
+        c.drawText("✕", w - dp(23f), cy - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        val q = "¿Dejar de sugerir «$word»?"
+        textPaint.textAlign = Paint.Align.LEFT
+        fitText(q, quitL - dp(18f), 14f)
+        textPaint.color = t.text
+        c.drawText(q, dp(12f), cy - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+        textPaint.textAlign = Paint.Align.CENTER
     }
 
     fun setXp(level: Int, frac: Float, line: String, combo: Int, streak: Int) {
@@ -668,47 +1141,81 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     // ================================================================== layout
 
+    /** The number row is a bit shorter than the letter rows. */
+    private val numRowFrac = 0.8f
+    private fun keyAreaH() = rowH * (4f + if (numberRow) numRowFrac else 0f)
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = MeasureSpec.getSize(widthMeasureSpec)
-        val h = (topH + rowH * 4 + padY * 2).toInt()
+        val h = (topH + keyAreaH() + padY * 2).toInt()
         setMeasuredDimension(w, h)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        relayout(w, h)
+    }
+
+    private fun relayout(w: Int, h: Int) {
         bgShader = null
-        unitW = (w - padX * 2) / 10f
-        for (l in listOf(letters, symbols, symbols2)) layoutKeys(l, w)
-        // emoji bottom bar (same height as a key row, at the bottom)
+        val kw = kbWidth(w.toFloat())
+        val kl = kbLeft(w.toFloat())
+        unitW = (kw - padX * 2) / 10f
+        for (l in listOf(letters, symbols, symbols2)) layoutKeys(l, kl, kw)
+        // emoji bottom bar (same height as a key row, at the bottom, always full width)
+        val ew = (w - padX * 2) / 10f
         var x = padX
         val barTop = h - padY - rowH * 0.9f
         for (k in emojiBar) {
             k.left = x
-            k.right = x + k.width * unitW
+            k.right = x + k.width * ew
             k.top = barTop
             k.bottom = h - padY
             x = k.right
         }
     }
 
-    private fun layoutKeys(l: KbLayout, w: Int) {
+    /** All layouts fill the same height: with fewer rows (symbols) each row is a bit taller. */
+    private fun layoutKeys(l: KbLayout, left: Float, kw: Float) {
+        val weights = l.rows.indices.map { r -> if (l.numberRow && r == 0) numRowFrac else 1f }
+        val scale = keyAreaH() / (rowH * weights.sum())
+        var top = topH + padY
         l.rows.forEachIndexed { r, row ->
+            val rh = rowH * weights[r] * scale
             val units = row.sumOf { it.width.toDouble() }.toFloat()
-            var x = (w - units * unitW) / 2f
-            val top = topH + padY + r * rowH
+            var x = left + (kw - units * unitW) / 2f
             for (k in row) {
                 k.left = x
                 k.right = x + k.width * unitW
                 k.top = top
-                k.bottom = top + rowH
+                k.bottom = top + rh
                 x = k.right
             }
+            top += rh
         }
+    }
+
+    /** Center of the "q" key (pixels): origin used to compare swipes when the keyboard moves. */
+    fun canonOrigin(): FloatArray {
+        val q = letters.allKeys.firstOrNull { it.label == "q" } ?: return floatArrayOf(0f, 0f)
+        return floatArrayOf(q.cx, q.cy)
     }
 
     // ================================================================== drawing
 
     override fun onDraw(canvas: Canvas) {
+        val saved = canvas.save()
+        try {
+            drawAll(canvas)
+        } catch (e: Exception) {
+            // never let a drawing problem close the keyboard
+            CrashLog.log(e, "dibujo")
+        } finally {
+            canvas.restoreToCount(saved)
+        }
+    }
+
+    private fun drawAll(canvas: Canvas) {
         val t = theme
         val now = SystemClock.uptimeMillis()
         val w = width.toFloat()
@@ -731,45 +1238,47 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val t = theme
         val w = width.toFloat()
 
-        // ---- row 1: suggestions + mic button at the right
-        val micW = dp(44f)
-        drawMicButton(c, w - micW / 2f, sugH / 2f, t)
-        val slotW = (w - micW) / 3f
-        val textY = sugH / 2f + dp(1f)
-        if (suggestions.all { it.isEmpty() }) {
-            // toolbar before you start typing: clipboard and settings
-            for ((i, cxT) in listOf(toolX(0), toolX(1)).withIndex()) {
-                val pressedT = mode == Mode.STRIP && stripPressed == -4 - i
-                if (pressedT || (i == 0 && clipMode)) {
-                    keyPaint.shader = null
-                    keyPaint.color = if (i == 0 && clipMode) t.accent else t.keyPressed
-                    c.drawCircle(cxT, sugH / 2f, dp(15f), keyPaint)
-                }
-                val col = if (i == 0 && clipMode) Color.WHITE else t.text
-                if (i == 0) drawClipIcon(c, cxT, sugH / 2f, dp(8f), col) else drawGearIcon(c, cxT, sugH / 2f, dp(8f), col)
-            }
-        }
-        for (i in 0..2) {
-            val s = suggestions[i]
-            val x0 = slotW * i
-            if (mode == Mode.STRIP && stripPressed == i && s.isNotEmpty()) {
-                keyPaint.shader = null
-                keyPaint.color = withAlpha(t.keyPressed, 160)
-                rect.set(x0 + dp(2f), dp(2f), x0 + slotW - dp(2f), sugH - dp(1f))
-                c.drawRoundRect(rect, dp(8f), dp(8f), keyPaint)
-            }
-            if (i > 0 && suggestions.any { it.isNotEmpty() }) {
-                linePaint.shader = null
-                linePaint.color = withAlpha(t.textMuted, 60)
-                c.drawRect(x0 - dp(0.5f), dp(8f), x0 + dp(0.5f), sugH - dp(6f), linePaint)
-            }
-            if (s.isEmpty()) continue
-            textPaint.typeface = if (i == boldIndex) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            textPaint.color = if (i == boldIndex) t.accent2 else t.text
-            fitText(s, slotW - dp(10f), 17f)
-            c.drawText(s, x0 + slotW / 2f, textY - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
-        }
+        // ---- row 1: [toolbar button] suggestions / toolbar / paste chip [mic]
+        val ask = removeAsk
+        if (ask != null) drawRemoveAsk(c, t, ask) else drawRow1(c, t, w)
+        drawRow2(c, t, w, now)
+    }
 
+    private fun drawRow1(c: Canvas, t: KbTheme, w: Float) {
+        drawMicButton(c, w - sideW / 2f, sugH / 2f, t)
+        val content = stripContent()
+        drawToolbarButton(c, sideW / 2f, sugH / 2f, t, content == 1)
+        when (content) {
+            1 -> drawToolbar(c, t)
+            2 -> drawChip(c, t)
+            else -> {
+                val slotW = (w - sideW * 2) / 3f
+                val textY = sugH / 2f + dp(1f)
+                for (i in 0..2) {
+                    val s = suggestions[i]
+                    val x0 = sideW + slotW * i
+                    if (mode == Mode.STRIP && stripPressed == i && s.isNotEmpty()) {
+                        keyPaint.shader = null
+                        keyPaint.color = withAlpha(t.keyPressed, 160)
+                        rect.set(x0 + dp(2f), dp(2f), x0 + slotW - dp(2f), sugH - dp(1f))
+                        c.drawRoundRect(rect, dp(8f), dp(8f), keyPaint)
+                    }
+                    if (i > 0) {
+                        linePaint.shader = null
+                        linePaint.color = withAlpha(t.textMuted, 60)
+                        c.drawRect(x0 - dp(0.5f), dp(8f), x0 + dp(0.5f), sugH - dp(6f), linePaint)
+                    }
+                    if (s.isEmpty()) continue
+                    textPaint.typeface = if (i == boldIndex) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    textPaint.color = if (i == boldIndex) t.accent2 else t.text
+                    fitText(s, slotW - dp(10f), 17f)
+                    c.drawText(s, x0 + slotW / 2f, textY - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
+                }
+            }
+        }
+    }
+
+    private fun drawRow2(c: Canvas, t: KbTheme, w: Float, now: Long) {
         // ---- row 2: level circle + xp bar, xp and streak under the bar
         val r = dp(14f)
         val bcx = padX + dp(5f) + r
@@ -868,6 +1377,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             drawClipPanel(c, t)
             return
         }
+        if (editMode) {
+            drawEditPanel(c, t)
+            return
+        }
         if (emojiMode) drawEmojiPanel(c)
         val keys = if (emojiMode) emojiBar else layout.allKeys
         for (k in keys) {
@@ -932,6 +1445,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 c.drawText(k.hint, rect.right - dp(7f), rect.top + dp(12f), hintPaint)
             }
         }
+        if (oneHand > 0 && !emojiMode) drawOneHandPanel(c, t)
         // swipe-delete indicator
         if (mode == Mode.DELSWIPE && delSteps > 0) {
             val k = downKey
@@ -961,7 +1475,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun drawPreview(c: Canvas) {
-        if (mode != Mode.PRESS) return
+        if (mode != Mode.PRESS || !showPreview) return
         val k = curKey ?: return
         if (k.isSpecial) return
         val t = theme
@@ -1153,7 +1667,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 listener.onSpaceLongPress()
             } else if (k.alts.isNotEmpty()) {
                 openPopup(k)
-                listener.onPressFeedback()
+                listener.onPressFeedback(0)
             }
             invalidate()
         }
@@ -1218,19 +1732,30 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         return best
     }
 
-    private fun toolX(i: Int) = dp(28f) + i * dp(48f)
-
+    /**
+     * What's under the finger on the first row: 0..2 suggestion, -3 microphone, -6 toolbar button,
+     * -7 paste chip, -10-i toolbar icon i, -1 nothing (the XP row has no action).
+     */
     private fun stripIndexAt(x: Float, y: Float): Int {
-        if (y >= sugH) return -1   // xp row: no action
-        val micW = dp(44f)
-        if (x >= width - micW) return -3   // microphone
-        if (suggestions.all { it.isEmpty() }) {
-            if (x < toolX(0) + dp(24f)) return -4   // clipboard
-            if (x < toolX(1) + dp(24f)) return -5   // settings
-            return -1
+        if (y >= sugH) return -1
+        if (removeAsk != null) {
+            val cancelL = width - dp(46f)
+            return when {
+                x >= cancelL -> -21
+                x >= cancelL - dp(92f) -> -20
+                else -> -22               // tap on the question: also cancels
+            }
         }
-        val i = (x / ((width - micW) / 3f)).toInt().coerceIn(0, 2)
-        return if (suggestions[i].isNotEmpty()) i else -1
+        if (x >= width - sideW) return -3
+        if (x < sideW) return -6
+        return when (stripContent()) {
+            1 -> -10 - ((x - sideW) / toolCellW()).toInt().coerceIn(0, toolCount - 1)
+            2 -> -7
+            else -> {
+                val i = ((x - sideW) / ((width - sideW * 2) / 3f)).toInt().coerceIn(0, 2)
+                if (suggestions[i].isNotEmpty()) i else -1
+            }
+        }
     }
 
     private fun addGlide(x: Float, y: Float) {
@@ -1247,6 +1772,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private fun cancelGesture() {
         removeCallbacks(longPress)
         removeCallbacks(repeatDel)
+        removeCallbacks(editRepeat)
+        removeCallbacks(sugLongPress)
+        editPressed = null
         mode = Mode.NONE
         downKey = null
         curKey = null
@@ -1256,6 +1784,18 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        try {
+            handleTouch(e)
+        } catch (ex: Exception) {
+            CrashLog.log(ex, "toque")
+            cancelGesture()
+            gCount = 0
+            invalidate()
+        }
+        return true
+    }
+
+    private fun handleTouch(e: MotionEvent) {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 activeId = e.getPointerId(0)
@@ -1302,7 +1842,6 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 invalidate()
             }
         }
-        return true
     }
 
     private fun start(x: Float, y: Float) {
@@ -1330,9 +1869,38 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             listener.onMic()
             return
         }
+        if (editMode && y >= topH) {
+            val cell = editCellAt(x, y)
+            mode = Mode.EDIT
+            editPressed = cell
+            if (cell != null) {
+                listener.onPressFeedback(0)
+                if (cell.repeats) {
+                    fireEdit(cell)
+                    postDelayed(editRepeat, 400)
+                }
+            }
+            invalidate()
+            return
+        }
+        if (!emojiMode && !clipMode) {
+            val hit = oneHandHit(x, y)
+            if (hit != 0) {
+                mode = Mode.NONE
+                if (hit > 0) {
+                    listener.onPressFeedback(0)
+                    oneHand = if (hit == 1) 0 else (if (oneHand == 1) 2 else 1)
+                    if (oneHand > 0) oneHandSide = oneHand
+                    listener.onOneHand(oneHand)
+                }
+                return
+            }
+        }
         if (y < topH) {
             mode = Mode.STRIP
             stripPressed = stripIndexAt(x, y)
+            removeCallbacks(sugLongPress)
+            if (stripPressed in 0..2) postDelayed(sugLongPress, 550)
             invalidate()
             return
         }
@@ -1345,7 +1913,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     emojiCat = i
                     emojiScroll = 0f
                     emojiVel = 0f
-                    listener.onPressFeedback()
+                    listener.onPressFeedback(0)
                 }
                 mode = Mode.NONE
                 invalidate()
@@ -1368,7 +1936,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         trailFadeStart = 0
         gCount = 0
         addGlide(x, y)
-        listener.onPressFeedback()
+        listener.onPressFeedback(k.code)
         when {
             k.code == Codes.DELETE -> {
                 delRepeated = false
@@ -1436,12 +2004,18 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 val s = max(0, ((downX - x) / (unitW * 1.1f)).toInt())
                 if (s != delSteps) {
                     delSteps = s
-                    listener.onPressFeedback()
+                    listener.onPressFeedback(0)
                     invalidate()
                 }
             }
             Mode.STRIP -> {
-                if (abs(y - downY) > topH) { stripPressed = -1; invalidate() }
+                if (abs(y - downY) > topH || abs(x - downX) > dp(24f)) {
+                    if (stripPressed != -1) {
+                        stripPressed = -1
+                        removeCallbacks(sugLongPress)
+                        invalidate()
+                    }
+                }
             }
             Mode.EMOJI -> {
                 if (abs(y - downY) > dp(8f)) { emojiScrolled = true; removeCallbacks(emojiLongPress) }
@@ -1464,11 +2038,21 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     invalidate()
                 }
             }
+            Mode.EDIT -> {
+                // finger slid off the button: stop repeating
+                val cell = editPressed
+                if (cell != null && editCellAt(x, y) !== cell) {
+                    removeCallbacks(editRepeat)
+                    editPressed = null
+                    invalidate()
+                }
+            }
             Mode.NONE -> {}
         }
     }
 
     private fun up(x: Float, y: Float) {
+        removeCallbacks(sugLongPress)
         removeCallbacks(emojiLongPress)
         removeCallbacks(longPress)
         removeCallbacks(repeatDel)
@@ -1494,19 +2078,41 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             Mode.DELSWIPE -> if (delSteps > 0) listener.onDeleteWords(delSteps)
             Mode.STRIP -> {
                 val i = stripIndexAt(x, y)
-                if (i == stripPressed) {
-                    if (i == -3) listener.onMic()
-                    else if (i == -4) listener.onClipboard()
-                    else if (i == -5) listener.onSettings()
-                    else if (i >= 0) listener.onSuggestion(i)
+                if (i == stripPressed && i != -1) {
+                    listener.onPressFeedback(0)
+                    when (i) {
+                        -20 -> {
+                            val wd = removeAsk
+                            removeAsk = null
+                            if (wd != null) listener.onSuggestionRemove(wd)
+                        }
+                        -21, -22 -> removeAsk = null
+                        -3 -> listener.onMic()
+                        -6 -> toolbarManual = stripContent() != 1
+                        -7 -> listener.onClipChip()
+                        -10 -> if (clipMode) listener.onKey(Key("ABC", Codes.LETTERS)) else listener.onClipboard()
+                        -11 -> if (editMode) listener.onKey(Key("ABC", Codes.LETTERS)) else showEditPanel()
+                        -12 -> {
+                            oneHand = if (oneHand == 0) oneHandSide else 0
+                            listener.onOneHand(oneHand)
+                        }
+                        -13 -> listener.onSettings()
+                        else -> if (i >= 0) listener.onSuggestion(i)
+                    }
                 }
                 stripPressed = -1
+            }
+            Mode.EDIT -> {
+                removeCallbacks(editRepeat)
+                val cell = editPressed
+                if (cell != null && !cell.repeats && editCellAt(x, y) === cell) fireEdit(cell)
+                editPressed = null
             }
             Mode.EMOJI -> {
                 if (!emojiScrolled) {
                     val e = emojiAt(downX, downY)
                     if (e != null) {
-                        listener.onPressFeedback()
+                        listener.onPressFeedback(0)
                         listener.onAltText(e)
                         addRecent(e)
                     }
@@ -1529,5 +2135,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         super.onDetachedFromWindow()
         removeCallbacks(longPress)
         removeCallbacks(repeatDel)
+        removeCallbacks(editRepeat)
+        removeCallbacks(emojiLongPress)
     }
 }

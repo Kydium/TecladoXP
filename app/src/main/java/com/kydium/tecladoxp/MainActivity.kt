@@ -2,6 +2,8 @@ package com.kydium.tecladoxp
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -61,6 +63,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.init(this)
         XpManager.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
         val sv = ScrollView(this)
@@ -159,6 +162,7 @@ class MainActivity : Activity() {
 
         renderSetup()
         renderUpdate()
+        renderErrorLog()
         renderProfile(lvl, into, need)
         renderStats()
         renderAchievements()
@@ -588,25 +592,32 @@ class MainActivity : Activity() {
 
     /** A label plus a row of buttons to pick one value (saved as an Int setting). */
     private fun optionRow(parent: LinearLayout, label: String, desc: String, key: String, def: Int, options: List<Pair<Int, String>>) {
-        parent.addView(text(label, 15f, textC).apply { setPadding(0, dpi(12f), 0, 0) })
-        parent.addView(text(desc, 12f, muted).apply { setPadding(0, 0, 0, dpi(8f)) })
+        parent.addView(text(label, 15f, textC).apply { setPadding(0, dpi(12f), 0, if (desc.isEmpty()) dpi(8f) else 0) })
+        if (desc.isNotEmpty()) parent.addView(text(desc, 12f, muted).apply { setPadding(0, 0, 0, dpi(8f)) })
         val current = settings.getInt(key, def)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for ((value, name) in options) {
-            row.addView(button(name, value == current) {
+            val b = button(name, value == current) {
                 settings.edit().putInt(key, value).apply()
                 render()
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = dpi(3f); rightMargin = dpi(3f)
+            }
+            if (options.size > 3) {
+                // many options: smaller text so they fit in one line
+                b.textSize = 12.5f
+                b.setPadding(dpi(2f), dpi(12f), dpi(2f), dpi(12f))
+            }
+            row.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dpi(if (options.size > 3) 2f else 3f); rightMargin = dpi(if (options.size > 3) 2f else 3f)
             })
         }
         parent.addView(row)
     }
 
     private fun renderSettings() {
-        val c = card()
-        sectionTitle(c, "Ajustes")
-        c.addView(text("Idioma del teclado", 15f, textC).apply { setPadding(0, 0, 0, dpi(8f)) })
+        // ---- writing
+        val w = card()
+        sectionTitle(w, "✍️ Escritura")
+        w.addView(text("Idioma del teclado", 15f, textC).apply { setPadding(0, 0, 0, dpi(8f)) })
         val lang = settings.getString("lang", "es")
         val langRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         listOf("es" to "Español", "en" to "English", "es_en" to "Ambos").forEach { (id, label) ->
@@ -617,47 +628,67 @@ class MainActivity : Activity() {
                 leftMargin = dpi(3f); rightMargin = dpi(3f)
             })
         }
-        c.addView(langRow)
-        c.addView(text("\"Ambos\" sirve si mezclas español e inglés: entiende los dos, pero corrige un poco menos.", 12f, muted)
+        w.addView(langRow)
+        w.addView(text("\"Ambos\" sirve si mezclas español e inglés: entiende los dos, pero corrige un poco menos. " +
+            "También puedes cambiarlo manteniendo la barra espaciadora.", 12f, muted)
             .apply { setPadding(0, dpi(6f), 0, dpi(10f)) })
-        switchRow(c, "Escritura deslizante", "Desliza el dedo por las letras para escribir", "glide", true)
-        switchRow(c, "Autocorrector", "Corrige al presionar espacio (⌫ para deshacer)", "autocorrect", true)
-        switchRow(c, "Vibración al tocar", "", "vibrate", true)
-        switchRow(c, "Doble espacio = punto", "", "doublespace", true)
-        switchRow(c, "Números en las teclas", "Mantén presionada la fila de arriba", "hints", true)
-        switchRow(c, "Mostrar +XP flotante", "", "floatxp", true)
-        switchRow(c, "Sonidos de XP", "Un \"pling\" al ganar XP y una melodía al subir de nivel", "xpsound", true)
-        soundRow(c, "Sonido al ganar XP", SoundFx.ORB_FILE, REQ_ORB)
-        soundRow(c, "Sonido al subir de nivel", SoundFx.LEVEL_FILE, REQ_LEVEL)
+        switchRow(w, "Escritura deslizante", "Desliza el dedo por las letras para escribir", "glide", true)
+        switchRow(w, "Autocorrector", "Corrige al presionar espacio (⌫ justo después para deshacer)", "autocorrect", true)
+        switchRow(w, "Predecir la siguiente palabra", "Sugiere palabras antes de que empieces a escribir", "nextword", true)
+        switchRow(w, "Mayúscula automática", "Al empezar a escribir y después de un punto", "autocaps", true)
+        switchRow(w, "Sugerir emojis", "Ej: \"jaja\" → 😂 (tócalo y reemplaza la palabra)", "emojisug", true)
+        switchRow(w, "Doble espacio = punto", "", "doublespace", true)
+        root.addView(w)
 
-        optionRow(c, "Sumar la XP después de", "Tiempo sin escribir para que la XP se sume a la barra", "xppause", 1000,
+        // ---- keyboard look & feel
+        val k = card()
+        sectionTitle(k, "⌨️ Teclado")
+        optionRow(k, "Altura del teclado", "", "height", 1,
+            listOf(4 to "Mínima", 0 to "Baja", 1 to "Normal", 2 to "Alta", 3 to "Máxima"))
+        switchRow(k, "Fila de números", "Una fila del 1 al 0 arriba de las letras", "numrow", false)
+        optionRow(k, "Modo una mano", "El teclado se achica hacia un lado para escribir con el pulgar. " +
+            "También se activa desde ▦ en el teclado.", "onehand", 0,
+            listOf(0 to "No", 1 to "Izquierda", 2 to "Derecha"))
+        switchRow(k, "Mostrar la tecla al presionar", "Una burbuja con la letra arriba de tu dedo", "preview", true)
+        switchRow(k, "Números en las teclas", "Pequeños números en la fila de arriba (mantén para escribirlos)", "hints", true)
+        optionRow(k, "Mantener presionado", "Cuánto hay que mantener una tecla para ver acentos y símbolos", "longpress", 320,
+            listOf(220 to "Rápido", 320 to "Normal", 450 to "Lento", 600 to "Muy lento"))
+        root.addView(k)
+
+        // ---- sound & vibration
+        val sv = card()
+        sectionTitle(sv, "🔊 Sonido y vibración")
+        switchRow(sv, "Vibración al tocar", "", "vibrate", true)
+        optionRow(sv, "Fuerza de la vibración", "", "vibstrength", 1,
+            listOf(0 to "Suave", 1 to "Media", 2 to "Fuerte"))
+        switchRow(sv, "Sonido al tocar las teclas", "El clic del celular (no suena en silencio ni en vibración)", "keysound", false)
+        switchRow(sv, "Sonidos de XP", "Un \"pling\" al ganar XP y una melodía al subir de nivel", "xpsound", true)
+        soundRow(sv, "Sonido al ganar XP", SoundFx.ORB_FILE, REQ_ORB)
+        soundRow(sv, "Sonido al subir de nivel", SoundFx.LEVEL_FILE, REQ_LEVEL)
+        root.addView(sv)
+
+        // ---- xp & dictation
+        val x = card()
+        sectionTitle(x, "⭐ Experiencia y dictado")
+        switchRow(x, "Mostrar +XP flotante", "", "floatxp", true)
+        optionRow(x, "Sumar la XP después de", "Tiempo sin escribir para que la XP se sume a la barra", "xppause", 1000,
             listOf(500 to "0.5 s", 1000 to "1 s", 2000 to "2 s", 3000 to "3 s"))
-        optionRow(c, "Dictado: esperar en silencio", "Cuánto espera el micrófono sin que hables antes de terminar", "voicesilence", 5000,
+        optionRow(x, "Dictado: esperar en silencio", "Cuánto espera el micrófono sin que hables antes de terminar", "voicesilence", 5000,
             listOf(2000 to "2 s", 3000 to "3 s", 5000 to "5 s", 8000 to "8 s"))
+        root.addView(x)
 
-        c.addView(text("Altura del teclado", 15f, textC).apply { setPadding(0, dpi(12f), 0, dpi(8f)) })
-        val h = settings.getInt("height", 1)
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("Baja", "Normal", "Alta").forEachIndexed { i, s ->
-            val b = button(s, i == h) {
-                settings.edit().putInt("height", i).apply()
-                render()
-            }
-            row.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = dpi(3f); rightMargin = dpi(3f)
-            })
-        }
-        c.addView(row)
-
-        c.addView(text("Gestos", 15f, textC, true).apply { setPadding(0, dpi(16f), 0, dpi(4f)) })
-        c.addView(text(
-            "• Mantén presionada una tecla para acentos, números y emojis (en la coma)\n" +
+        // ---- gestures help
+        val g = card()
+        sectionTitle(g, "👆 Gestos y atajos")
+        g.addView(text(
+            "• ▦ (a la izquierda de las sugerencias): portapapeles, edición de texto, una mano y ajustes\n" +
+                "• Al copiar algo aparece arriba para pegarlo con un toque\n" +
+                "• Mantén presionada una tecla para acentos, números y emojis (en la coma)\n" +
                 "• Desliza sobre la barra espaciadora para mover el cursor\n" +
-                "• Desliza a la izquierda desde ⌫ para borrar palabras\n" +
+                "• Desliza a la izquierda desde ⌫ para borrar palabras enteras\n" +
                 "• Mantén la barra espaciadora para cambiar de idioma\n" +
                 "• Toca ⇧ dos veces para bloquear mayúsculas\n" +
-                "• Toca el engranaje (antes de escribir) para abrir esta pantalla\n" +
-                "• Toca el portapapeles (antes de escribir) para pegar lo que copiaste",
+                "• ⌫ justo después de una corrección la deshace y aprende tu palabra",
             13f, muted
         ).apply { setLineSpacing(dp(3f), 1f) })
 
@@ -673,9 +704,43 @@ class MainActivity : Activity() {
                 .setNegativeButton("Cancelar", null)
                 .show()
         }
-        c.addView(reset, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        g.addView(reset, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dpi(16f)
         })
+        root.addView(g)
+    }
+
+    /** Shown only if the keyboard wrote down an error: lets you copy it to send it. */
+    private fun renderErrorLog() {
+        val log = CrashLog.read(this) ?: return
+        val c = card()
+        sectionTitle(c, "⚠️ Registro de errores")
+        c.addView(text(
+            "El teclado anotó un problema (y lo evitó para no cerrarse). Si notaste algo raro, " +
+                "copia esto y envíalo para poder arreglarlo.", 12.5f, muted
+        ).apply { setPadding(0, 0, 0, dpi(8f)); setLineSpacing(dp(2f), 1f) })
+        val preview = log.lines().take(7).joinToString("\n")
+        c.addView(text(preview, 11f, textC).apply {
+            typeface = Typeface.MONOSPACE
+            background = rounded(cardBg2, 10f)
+            setPadding(dpi(10f), dpi(8f), dpi(10f), dpi(8f))
+        })
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dpi(10f), 0, 0)
+        }
+        row.addView(button("Copiar", true) {
+            try {
+                getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Error Teclado XP", log))
+                Toast.makeText(this, "Copiado. Pégalo en el chat para enviarlo", Toast.LENGTH_SHORT).show()
+            } catch (_: Exception) {
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(4f) })
+        row.addView(button("Borrar", false) {
+            CrashLog.clear(this)
+            render()
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(4f) })
+        c.addView(row)
         root.addView(c)
     }
 
@@ -779,6 +844,46 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dpi(10f)
             })
+        }
+
+        // words removed with a long-press on a suggestion
+        val blocked = dict.blockedWords()
+        c.addView(text(
+            if (blocked.isEmpty()) "🚫 Mantén presionada una sugerencia para que no vuelva a aparecer."
+            else "🚫 Quitadas de las sugerencias (${blocked.size}) · toca ↺ para recuperarla",
+            13f, if (blocked.isEmpty()) muted else textC
+        ).apply { setPadding(0, dpi(16f), 0, dpi(2f)) })
+        var bline: LinearLayout? = null
+        blocked.forEachIndexed { i, w ->
+            if (i % 3 == 0) {
+                bline = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, dpi(8f), 0, 0)
+                }
+                c.addView(bline)
+            }
+            val chip = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = rounded(cardBg2, 12f)
+                setPadding(dpi(10f), dpi(6f), dpi(6f), dpi(6f))
+            }
+            chip.addView(text(w, 14f, muted), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            chip.addView(text("↺", 15f, accent2, true).apply {
+                setPadding(dpi(8f), 0, dpi(4f), 0)
+                setOnClickListener {
+                    dict.unblockWord(w)
+                    Toast.makeText(this@MainActivity, "\"$w\" vuelve a las sugerencias", Toast.LENGTH_SHORT).show()
+                    render()
+                }
+            })
+            bline?.addView(chip, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = dpi(3f); rightMargin = dpi(3f)
+            })
+        }
+        val brest = blocked.size % 3
+        if (brest != 0) repeat(3 - brest) {
+            bline?.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f).apply { leftMargin = dpi(3f); rightMargin = dpi(3f) })
         }
         root.addView(c)
     }

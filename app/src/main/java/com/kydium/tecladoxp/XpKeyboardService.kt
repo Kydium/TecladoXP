@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.ClipboardManager
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -21,6 +22,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.text.InputType
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -63,9 +65,23 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     // user settings
     private var vibrateOn = true
+    private var vibStrength = 1         // 0 soft, 1 medium, 2 strong
+    private var keySoundOn = false
+    private var audio: AudioManager? = null
     private var doubleSpaceOn = true
     private var autoCorrectSetting = true
     private var glideSetting = true
+    private var autoCapsOn = true
+    private var nextWordOn = true
+    private var emojiSugOn = true
+
+    // first row: toolbar until you start typing, paste chip for something you just copied
+    private var typedSinceStart = false
+    private var chipText: String? = null
+    private var chipStamp = 0L
+    private val chipMs = 3 * 60_000L
+    private val chipExpire = Runnable { CrashLog.safe("chip") { refreshSuggestions() } }
+    private val refreshRunnable = Runnable { CrashLog.safe("sugerencias") { refreshSuggestions() } }
 
     // editing state
     private var lastWordWasGlide = false
@@ -74,6 +90,33 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var lastSpaceTime = 0L
     private var prevWord: String? = null
     private var prevWord2: String? = null
+
+    /**
+     * Takes the previous one or two words from the text itself, so predictions stay right after
+     * moving the cursor, pasting, or when the app changes the text (for example after sending).
+     */
+    private fun resyncContext() {
+        val ic = ic() ?: return
+        val before = try { ic.getTextBeforeCursor(80, 0)?.toString() } catch (_: Exception) { null } ?: return
+        val comp = composing.toString()
+        val text = if (comp.isNotEmpty() && before.endsWith(comp)) before.substring(0, before.length - comp.length) else before
+        val words = ArrayList<String>(2)
+        var i = text.length
+        while (words.size < 2 && i > 0) {
+            while (i > 0 && (text[i - 1] == ' ' || text[i - 1] == '\t' || text[i - 1] in ",;:\"«»“”()")) i--
+            if (i == 0 || !isWordChar(text[i - 1])) break      // start of sentence, emoji, new line…
+            var j = i
+            while (j > 0 && isWordChar(text[j - 1])) j--
+            val word = text.substring(j, i)
+            if (word.none { it.isLetterOrDigit() }) break    // a lone "-" or "'"
+            words.add(word.lowercase())
+            i = j
+        }
+        prevWord = words.getOrNull(0)
+        prevWord2 = words.getOrNull(1)
+    }
+
+    private fun isWordChar(c: Char) = c.isLetterOrDigit() || c == '\'' || c == '’' || c == '-'
 
     /** Previous one or two words for predictions ("te lo"), null at the start of a sentence. */
     private fun context(): String? {
@@ -93,12 +136,15 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         worker.post {
             try {
                 if (!(dict.loaded && dict.lang == want)) loadLanguage(want)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                CrashLog.log(e, "diccionario")
             }
             main.post {
-                kv?.spaceLabel = langLabel(want)
-                kv?.invalidate()
-                refreshSuggestions()
+                CrashLog.safe("idioma") {
+                    kv?.spaceLabel = langLabel(want)
+                    kv?.invalidate()
+                    refreshSuggestions()
+                }
             }
         }
     }
@@ -139,6 +185,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.init(this)
         XpManager.init(this)
         TouchModel.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -188,12 +235,23 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             .let { if (it.unlockLevel <= lvl) it.id else "clasica" }
         v.trailStyle = TrailStyles.byId(settings.getString("trailstyle", "clasica"))
             .let { if (it.unlockLevel <= lvl) it.id else "clasica" }
-        v.heightScale = when (settings.getInt("height", 1)) { 0 -> 0.88f; 2 -> 1.14f; else -> 1f }
+        v.heightScale = when (settings.getInt("height", 1)) { 4 -> 0.78f; 0 -> 0.88f; 2 -> 1.14f; 3 -> 1.28f; else -> 1f }
         v.showHints = settings.getBoolean("hints", true)
         v.showFloatingXp = settings.getBoolean("floatxp", true)
+        v.showPreview = settings.getBoolean("preview", true)
+        v.longPressMs = settings.getInt("longpress", 320).toLong()
+        v.numberRow = settings.getBoolean("numrow", false)
+        val oneHand = settings.getInt("onehand", 0)
+        v.oneHandSide = if (oneHand > 0) oneHand else settings.getInt("onehand_side", 2)
+        v.oneHand = oneHand
         v.spaceLabel = langLabel(langSetting())
         if (::worker.isInitialized) ensureLanguage()
         vibrateOn = settings.getBoolean("vibrate", true)
+        vibStrength = settings.getInt("vibstrength", 1)
+        keySoundOn = settings.getBoolean("keysound", false)
+        autoCapsOn = settings.getBoolean("autocaps", true)
+        nextWordOn = settings.getBoolean("nextword", true)
+        emojiSugOn = settings.getBoolean("emojisug", true)
         soundOn = settings.getBoolean("xpsound", true)
         if (soundOn) (sounds ?: SoundFx(this).also { sounds = it }).preload()
         doubleSpaceOn = settings.getBoolean("doublespace", true)
@@ -203,8 +261,14 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        CrashLog.safe("inicio") { startInput(info, restarting) }
+    }
+
+    private fun startInput(info: EditorInfo, restarting: Boolean) {
         val v = kv ?: return
         applySettings()
+        if (!restarting) typedSinceStart = false
+        v.clearToolbarOverride()
         composing.setLength(0)
         lastCorrection = null
         autoSpace = false
@@ -273,12 +337,15 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
-        cancelVoice()
-        flushXp()
-        TouchModel.save()
-        composing.setLength(0)
-        lastCorrection = null
-        dict.saveAsync()
+        CrashLog.safe("cierre") {
+            main.removeCallbacks(refreshRunnable)
+            cancelVoice()
+            flushXp()
+            TouchModel.save()
+            composing.setLength(0)
+            lastCorrection = null
+            dict.saveAsync()
+        }
     }
 
     override fun onUpdateSelection(
@@ -286,20 +353,26 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         candidatesStart: Int, candidatesEnd: Int
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
-        selStart = newSelStart
-        selEnd = newSelEnd
-        val movedAway = newSelStart != newSelEnd ||
-            (candidatesEnd >= 0 && newSelStart != candidatesEnd) ||
-            (candidatesEnd < 0 && (newSelStart < oldSelStart || newSelStart > oldSelStart + 3))
-        if (composing.isNotEmpty() && movedAway) {
-            // user moved the cursor away from the word being typed
-            composing.setLength(0)
-            currentInputConnection?.finishComposingText()
-            lastWordWasGlide = false
-            lastCorrection = null
-            refreshSuggestions()
+        CrashLog.safe("cursor") {
+            selStart = newSelStart
+            selEnd = newSelEnd
+            val movedAway = newSelStart != newSelEnd ||
+                (candidatesEnd >= 0 && newSelStart != candidatesEnd) ||
+                (candidatesEnd < 0 && (newSelStart < oldSelStart || newSelStart > oldSelStart + 3))
+            if (composing.isNotEmpty() && movedAway && !listening) {
+                // user moved the cursor away from the word being typed
+                composing.setLength(0)
+                currentInputConnection?.finishComposingText()
+                lastWordWasGlide = false
+                lastCorrection = null
+            }
+            if (composing.isEmpty()) {
+                updateShiftAuto()
+                // the text around the cursor changed: update predictions / toolbar (once per burst)
+                main.removeCallbacks(refreshRunnable)
+                main.postDelayed(refreshRunnable, 40)
+            }
         }
-        if (composing.isEmpty()) updateShiftAuto()
     }
 
     // ================================================================= helpers
@@ -308,7 +381,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private fun updateShiftAuto() {
         val v = kv ?: return
-        if (v.shiftState == 2) return
+        if (v.shiftState == 2 || !autoCapsOn) return
         if (v.layout.type != LayoutType.LETTERS) return
         val ic = ic() ?: return
         val ei = currentInputEditorInfo ?: return
@@ -320,8 +393,26 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         if (!vibrateOn) return
         val vb = vibrator ?: return
         try {
-            val amp = if (vb.hasAmplitudeControl()) 90 else VibrationEffect.DEFAULT_AMPLITUDE
-            vb.vibrate(VibrationEffect.createOneShot(ms, amp))
+            val (scale, strength) = when (vibStrength) { 0 -> Pair(0.7f, 40); 2 -> Pair(1.4f, 200); else -> Pair(1f, 90) }
+            val amp = if (vb.hasAmplitudeControl()) strength else VibrationEffect.DEFAULT_AMPLITUDE
+            vb.vibrate(VibrationEffect.createOneShot(maxOf(5L, (ms * scale).toLong()), amp))
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Typing sound of the phone (only when the phone isn't on silent / vibrate). */
+    private fun keyClick(code: Int) {
+        if (!keySoundOn) return
+        try {
+            val am = audio ?: (getSystemService(Context.AUDIO_SERVICE) as? AudioManager)?.also { audio = it } ?: return
+            if (am.ringerMode != AudioManager.RINGER_MODE_NORMAL) return
+            val fx = when (code) {
+                Codes.DELETE -> AudioManager.FX_KEYPRESS_DELETE
+                Codes.ENTER -> AudioManager.FX_KEYPRESS_RETURN
+                Codes.SPACE -> AudioManager.FX_KEYPRESS_SPACEBAR
+                else -> AudioManager.FX_KEYPRESS_STANDARD
+            }
+            am.playSoundEffect(fx, -1f)
         } catch (_: Exception) {
         }
     }
@@ -367,6 +458,9 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private fun refreshSuggestions() {
         val v = kv ?: return
+        if (listening) return            // dictating: the bar stays as it is
+        main.removeCallbacks(refreshRunnable)
+        updateStrip()
         if (!predictionsOn || !dict.loaded) {
             slots = listOf("", "", "")
             v.setSuggestions(slots, -1)
@@ -380,33 +474,115 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             val centers = keyCenters()
             worker.removeCallbacksAndMessages(null)
             worker.post {
-                val r = dict.suggest(snapshot, prev, tp, centers)
+                val r = try { dict.suggest(snapshot, prev, tp, centers) } catch (e: Exception) { CrashLog.log(e, "sugerir"); null }
                 main.post {
-                    if (composing.toString() == snapshot && !lastWordWasGlide) {
-                        sugFor = snapshot
-                        sugResult = r
-                        showSuggestions(snapshot, r)
+                    CrashLog.safe("sugerir") {
+                        if (r != null && composing.toString() == snapshot && !lastWordWasGlide) {
+                            sugFor = snapshot
+                            sugResult = r
+                            showSuggestions(snapshot, r)
+                        }
                     }
                 }
             }
         } else {
             sugFor = null
             sugResult = null
-            val p = dict.predict(context())
+            resyncContext()
+            val p = if (nextWordOn) dict.predict(context()) else emptyList()
             val cased = p.map { if ((kv?.shiftState ?: 0) > 0) it.replaceFirstChar { c -> c.uppercaseChar() } else it }
             slots = listOf(cased.getOrElse(1) { "" }, cased.getOrElse(0) { "" }, cased.getOrElse(2) { "" })
             v.setSuggestions(slots, -1)
         }
     }
 
+    // ================================================================= first row: toolbar & paste chip
+
+    /**
+     * Before you type anything (and when the field is empty or text is selected) the first row shows
+     * the toolbar: clipboard, text editing, one hand and settings. Something you just copied shows
+     * up as a chip to paste it with one tap.
+     */
+    private fun updateStrip() {
+        val v = kv ?: return
+        if (composing.isNotEmpty()) {
+            v.setStrip(false, null)
+            return
+        }
+        val ic = ic()
+        val fieldEmpty = ic != null &&
+            ic.getTextBeforeCursor(1, 0).isNullOrEmpty() && ic.getTextAfterCursor(1, 0).isNullOrEmpty()
+        val toolbar = !typedSinceStart || fieldEmpty || selStart != selEnd || !nextWordOn || !predictionsOn
+        v.setStrip(toolbar, freshChip())
+    }
+
+    private fun freshChip(): String? {
+        val t = chipText ?: return null
+        if (System.currentTimeMillis() - chipStamp > chipMs) {
+            chipText = null
+            return null
+        }
+        return t
+    }
+
+    /** Offer [text] (copied at [stamp], wall-clock ms) as a chip, unless it's old or was already used. */
+    private fun armChip(text: String, stamp: Long) {
+        val now = System.currentTimeMillis()
+        if (stamp <= 0L || now - stamp > chipMs || stamp > now + 60_000) return
+        if (text.hashCode() == settings.getInt("chip_used_h", 0) && kotlin.math.abs(stamp - settings.getLong("chip_used", 0L)) < 10_000) return
+        if (chipText == text && kotlin.math.abs(chipStamp - stamp) < 10_000) return
+        chipText = text
+        chipStamp = stamp
+        main.removeCallbacks(chipExpire)
+        main.postDelayed(chipExpire, chipMs - (now - stamp) + 100)
+    }
+
+    /** The chip was pasted or you started typing: don't offer it again. */
+    private fun consumeChip() {
+        val t = chipText ?: return
+        chipText = null
+        main.removeCallbacks(chipExpire)
+        settings.edit().putLong("chip_used", chipStamp).putInt("chip_used_h", t.hashCode()).apply()
+    }
+
+    /** You typed something: show suggestions instead of the toolbar / chip. */
+    private fun startedTyping() {
+        typedSinceStart = true
+        if (chipText != null) consumeChip()
+        kv?.let {
+            it.clearToolbarOverride()
+            it.setStrip(false, null)
+        }
+    }
+
+    override fun onClipChip() {
+        val ic = ic() ?: return
+        val text = freshChip() ?: return
+        consumeChip()
+        if (composing.isNotEmpty()) commitWord(false)
+        ic.commitText(text, 1)
+        typedSinceStart = true
+        lastCorrection = null
+        autoSpace = false
+        updateShiftAuto()
+        refreshSuggestions()
+    }
+
     private fun showSuggestions(typed: String, r: Suggestions) {
         val v = kv ?: return
         val allowed = r.autoCorrect != null && correctionAllowed()
-        slots = r.slots.mapIndexed { i, s ->
+        val out = r.slots.map { s ->
             if (s.isEmpty()) s
             else if (s == typed) s
             else matchCase(typed, s)
+        }.toMutableList()
+        v.setStrip(false, null)
+        if (emojiSugOn && autoCorrectOn) {
+            // like Gboard: an emoji for the word in the right slot (tapping it replaces the word)
+            val e = EmojiSuggest.forWord(typed) ?: r.autoCorrect?.let { if (allowed) EmojiSuggest.forWord(it) else null }
+            if (e != null && out.size == 3) out[2] = e
         }
+        slots = out
         v.setSuggestions(slots, if (allowed) 1 else -1)
     }
 
@@ -421,7 +597,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     }
 
     /** XP is collected while you type and added all at once after a short pause. */
-    private val flushXpRunnable = Runnable { flushXp() }
+    private val flushXpRunnable = Runnable { CrashLog.safe("xp") { flushXp() } }
     private val xpPauseMs: Long get() = settings.getInt("xppause", 1000).toLong()
 
     private fun gainXp(word: String, kind: WordKind) {
@@ -507,7 +683,10 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     // ================================================================= key handling
 
-    override fun onPressFeedback() = vibrate()
+    override fun onPressFeedback(code: Int) {
+        vibrate()
+        keyClick(code)
+    }
 
     override fun onKey(key: Key) {
         kv?.let { if (it.unitW > 0f) pendingTap = floatArrayOf(it.lastTapX / it.unitW, it.lastTapY / it.keyRowH) }
@@ -546,6 +725,8 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val v = kv ?: return
         lastCorrection = null
         val isLetter = s.codePointCount(0, s.length) == 1 && Character.isLetter(s.codePointAt(0))
+        startedTyping()
+        if (isLetter && composing.isEmpty() && !directMode) resyncContext()
 
         if (directMode) {
             val out = if (isLetter && v.shiftState > 0) s.uppercase() else s
@@ -603,6 +784,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val ic = ic() ?: return
         val v = kv ?: return
         val now = SystemClock.uptimeMillis()
+        startedTyping()
         if (directMode) {
             flushRawWord()
             ic.commitText(" ", 1)
@@ -743,13 +925,38 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var lastGlideX: FloatArray? = null
     private var lastGlideY: FloatArray? = null
 
+    // Swipes are compared in key units measured from the "q" key (as on the standard keyboard), so
+    // the swipes the keyboard learned keep matching with the number row, one-handed mode or another height.
+    private val canonQX = 0.569f
+    private val canonQY = 1.759f
+
+    private fun canonPath(v: KeyboardView, px: FloatArray, py: FloatArray, n: Int): Pair<FloatArray, FloatArray> {
+        val o = v.canonOrigin()
+        val kw = v.unitW
+        val kh = v.keyRowH
+        return Pair(
+            FloatArray(n) { (px[it] - o[0]) / kw + canonQX },
+            FloatArray(n) { (py[it] - o[1]) / kh + canonQY }
+        )
+    }
+
+    private fun canonCenters(v: KeyboardView): Map<Char, FloatArray> {
+        val o = v.canonOrigin()
+        val kw = v.unitW
+        val kh = v.keyRowH
+        val m = HashMap<Char, FloatArray>()
+        for ((k, c) in v.letterCenters()) m[k] = floatArrayOf((c[0] - o[0]) / kw + canonQX, (c[1] - o[1]) / kh + canonQY)
+        return m
+    }
+
     private fun learnLastGlide(word: String) {
         val x = lastGlideX ?: return
         val y = lastGlideY ?: return
         val v = kv ?: return
         lastGlideX = null; lastGlideY = null
-        if (noLearn) return
-        dict.learnGlide(word, x, y, x.size, v.unitW, v.keyRowH)
+        if (noLearn || v.unitW <= 0f || v.keyRowH <= 0f) return
+        val (cx, cy) = canonPath(v, x, y, x.size)
+        dict.learnGlide(word, cx, cy, cx.size, 1f, 1f)
         // also learn where your finger passes for each key while swiping
         if (v.unitW > 0f && v.keyRowH > 0f) {
             val raw = HashMap<Char, FloatArray>()
@@ -763,6 +970,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private fun prepareGlide() {
         val ic = ic() ?: return
         lastCorrection = null
+        startedTyping()
         if (composing.isNotEmpty()) commitWord(!lastWordWasGlide)
         val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
         if (before.isNotEmpty() && !before[0].isWhitespace() && before[0] !in "¿¡(\"'«“@#/") ic.commitText(" ", 1)
@@ -778,6 +986,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val ic = ic() ?: return
         val v = kv ?: return
         val cased = res.map { applyShiftToWord(it) }
+        v.setStrip(false, null)
         composing.setLength(0)
         composing.append(cased[0])
         ic.setComposingText(composing, 1)
@@ -795,16 +1004,18 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     override fun onGlideProgress(px: FloatArray, py: FloatArray, n: Int) {
         val v = kv ?: return
         if (!dict.loaded || !glidePrepared) return
+        if (v.unitW <= 0f || v.keyRowH <= 0f) return
         val seq = ++glideSeq
-        val centers = v.letterCenters()
-        val kw = v.unitW
-        val kh = v.keyRowH
+        val centers = canonCenters(v)
+        val (cx, cy) = canonPath(v, px, py, n)
         val prev = context()
         worker.removeCallbacksAndMessages(null)
         worker.post {
-            val res = try { dict.glide(px, py, n, centers, kw, kh, prev, live = true) } catch (_: Exception) { emptyList() }
+            val res = try { dict.glide(cx, cy, n, centers, 1f, 1f, prev, live = true) } catch (_: Exception) { emptyList() }
             main.post {
-                if (seq == glideSeq && glidePrepared && res.isNotEmpty()) showGlideWord(res, false)
+                CrashLog.safe("deslizar") {
+                    if (seq == glideSeq && glidePrepared && res.isNotEmpty()) showGlideWord(res, false)
+                }
             }
         }
     }
@@ -818,7 +1029,9 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         glidePrepared = false
         lastGlideX = px.copyOf(n)
         lastGlideY = py.copyOf(n)
-        val res = dict.glide(px, py, n, v.letterCenters(), v.unitW, v.keyRowH, context())
+        if (v.unitW <= 0f || v.keyRowH <= 0f) return
+        val (cx, cy) = canonPath(v, px, py, n)
+        val res = dict.glide(cx, cy, n, canonCenters(v), 1f, 1f, context())
         if (res.isEmpty()) {
             // keep the live preview if there was one
             if (composing.isNotEmpty() && lastWordWasGlide) {
@@ -834,6 +1047,22 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val word = slots.getOrNull(index) ?: return
         if (word.isEmpty()) return
         lastCorrection = null
+        startedTyping()
+        if (word.none { it.isLetterOrDigit() }) {
+            // emoji suggestion: replaces the word you were typing
+            val typed = composing.toString()
+            ic.commitText(word, 1)
+            composing.setLength(0)
+            lastWordWasGlide = false
+            ic.commitText(" ", 1)
+            if (typed.isNotEmpty()) gainXp(typed, WordKind.SUGGESTION)
+            kv?.addRecentEmoji(word)
+            autoSpace = true
+            lastSpaceTime = SystemClock.uptimeMillis()
+            kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
+            refreshSuggestions()
+            return
+        }
         if (composing.isNotEmpty()) {
             val typed = composing.toString()
             if (lastWordWasGlide) learnLastGlide(word)
@@ -864,48 +1093,82 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private var clipboard: ClipboardManager? = null
     private val clipHistory = ArrayList<String>()
-    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip() }
+    /** Pinned clips: shown first, never trimmed nor cleared with "Borrar todo". */
+    private val clipPinned = LinkedHashSet<String>()
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener {
+        CrashLog.safe("portapapeles") {
+            captureClip(justCopied = true)
+            if (composing.isEmpty()) refreshSuggestions()
+        }
+    }
     private val clipSep = "\u001E"
 
     private fun loadClips() {
         val raw = settings.getString("clips", "") ?: ""
         clipHistory.clear()
         if (raw.isNotEmpty()) clipHistory.addAll(raw.split(clipSep).filter { it.isNotEmpty() })
+        val pins = settings.getString("clips_pinned", "") ?: ""
+        clipPinned.clear()
+        if (pins.isNotEmpty()) clipPinned.addAll(pins.split(clipSep).filter { it.isNotEmpty() && it in clipHistory })
+    }
+
+    /** What the clipboard panel shows: pinned first, then the rest from newest to oldest. */
+    private fun clipList(): List<String> =
+        clipHistory.filter { it in clipPinned } + clipHistory.filter { it !in clipPinned }
+
+    private fun trimClips() {
+        var i = clipHistory.size - 1
+        while (clipHistory.size - clipPinned.size > 25 && i >= 0) {
+            if (clipHistory[i] !in clipPinned) clipHistory.removeAt(i)
+            i--
+        }
     }
 
     private fun saveClips() {
-        settings.edit().putString("clips", clipHistory.joinToString(clipSep)).apply()
-        kv?.setClips(ArrayList(clipHistory))
+        settings.edit()
+            .putString("clips", clipHistory.joinToString(clipSep))
+            .putString("clips_pinned", clipPinned.joinToString(clipSep))
+            .apply()
+        kv?.setClips(clipList(), HashSet(clipPinned))
     }
 
-    /** Reads what's copied right now and adds it to the history (skips passwords marked sensitive). */
-    private fun captureClip() {
+    /**
+     * Reads what's copied right now and adds it to the history (skips passwords marked sensitive).
+     * If it was copied a moment ago it's also offered as a chip to paste it with one tap.
+     */
+    private fun captureClip(justCopied: Boolean = false) {
         try {
             val clip = clipboard?.primaryClip ?: return
             if (clip.itemCount == 0) return
-            val sensitive = clip.description?.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
+            val desc = clip.description
+            val sensitive = desc?.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
             if (sensitive) return
             val text = clip.getItemAt(0).coerceToText(this)?.toString() ?: return
             if (text.isBlank() || text.length > 5000) return
-            clipHistory.remove(text)
-            clipHistory.add(0, text)
-            while (clipHistory.size > 25) clipHistory.removeAt(clipHistory.size - 1)
-            saveClips()
+            if (clipHistory.firstOrNull() != text) {
+                clipHistory.remove(text)
+                clipHistory.add(0, text)
+                trimClips()
+                saveClips()
+            }
+            armChip(text, if (justCopied) System.currentTimeMillis() else (desc?.timestamp ?: 0L))
         } catch (_: Exception) {
         }
     }
 
     override fun onClipboard() {
         captureClip()
-        kv?.setClips(ArrayList(clipHistory))
+        kv?.setClips(clipList(), HashSet(clipPinned))
         kv?.showClipboard()
     }
 
     override fun onClipPick(index: Int) {
         val ic = ic() ?: return
-        val text = clipHistory.getOrNull(index) ?: return
+        val text = clipList().getOrNull(index) ?: return
         if (composing.isNotEmpty()) commitWord(false)
         ic.commitText(text, 1)
+        typedSinceStart = true
+        if (chipText == text) consumeChip()
         lastCorrection = null
         autoSpace = false
         kv?.setLayout(LayoutType.LETTERS)
@@ -913,14 +1176,103 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         refreshSuggestions()
     }
 
+    override fun onSuggestionRemove(word: String) {
+        dict.blockWord(word)
+        sugFor = null
+        sugResult = null
+        kv?.showBanner("🚫 «$word» ya no se sugerirá", "Puedes recuperarla en la app, en Mis palabras")
+        if (composing.isNotEmpty() && lastWordWasGlide) {
+            // swiped word: just take it out of the alternatives
+            slots = slots.map { if (it.equals(word, ignoreCase = true)) "" else it }
+            kv?.setSuggestions(slots, 1)
+        } else {
+            refreshSuggestions()
+        }
+    }
+
     override fun onClipDelete(index: Int) {
-        if (index in clipHistory.indices) clipHistory.removeAt(index)
+        val text = clipList().getOrNull(index) ?: return
+        clipHistory.remove(text)
+        clipPinned.remove(text)
+        saveClips()
+    }
+
+    override fun onClipPin(index: Int) {
+        val text = clipList().getOrNull(index) ?: return
+        if (!clipPinned.remove(text)) {
+            clipPinned.add(text)
+            kv?.showBanner("📌 Fijado", "Se queda en tu portapapeles hasta que lo quites")
+        }
         saveClips()
     }
 
     override fun onClipClear() {
-        clipHistory.clear()
+        clipHistory.retainAll { it in clipPinned }
         saveClips()
+    }
+
+    // ================================================================= text editing panel
+
+    override fun onEditAction(action: Int, selecting: Boolean) {
+        val ic = ic() ?: return
+        if (action == KeyboardView.E_DEL) {
+            handleDelete()
+            return
+        }
+        if (composing.isNotEmpty()) {
+            ic.finishComposingText()
+            composing.setLength(0)
+            lastWordWasGlide = false
+        }
+        lastCorrection = null
+        autoSpace = false
+        val shift = if (selecting) KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON else 0
+        when (action) {
+            KeyboardView.E_LEFT -> sendKey(KeyEvent.KEYCODE_DPAD_LEFT, shift)
+            KeyboardView.E_RIGHT -> sendKey(KeyEvent.KEYCODE_DPAD_RIGHT, shift)
+            KeyboardView.E_UP -> sendKey(KeyEvent.KEYCODE_DPAD_UP, shift)
+            KeyboardView.E_DOWN -> sendKey(KeyEvent.KEYCODE_DPAD_DOWN, shift)
+            KeyboardView.E_HOME -> sendKey(KeyEvent.KEYCODE_MOVE_HOME, shift)
+            KeyboardView.E_END -> sendKey(KeyEvent.KEYCODE_MOVE_END, shift)
+            KeyboardView.E_SELALL -> ic.performContextMenuAction(android.R.id.selectAll)
+            KeyboardView.E_COPY, KeyboardView.E_CUT -> {
+                if (ic.getSelectedText(0).isNullOrEmpty()) {
+                    Toast.makeText(this, "Primero selecciona el texto", Toast.LENGTH_SHORT).show()
+                } else {
+                    ic.performContextMenuAction(if (action == KeyboardView.E_COPY) android.R.id.copy else android.R.id.cut)
+                }
+            }
+            KeyboardView.E_PASTE -> {
+                ic.performContextMenuAction(android.R.id.paste)
+                typedSinceStart = true
+                consumeChip()
+            }
+            KeyboardView.E_UNDO -> sendKey(KeyEvent.KEYCODE_Z, KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON)
+        }
+    }
+
+    /** Sends a key like a physical keyboard would (with Shift / Ctrl held when [meta] says so). */
+    private fun sendKey(code: Int, meta: Int = 0) {
+        val ic = ic() ?: return
+        val t = SystemClock.uptimeMillis()
+        fun ev(action: Int, c: Int, m: Int) = KeyEvent(
+            t, t, action, c, 0, m, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+            KeyEvent.FLAG_SOFT_KEYBOARD or KeyEvent.FLAG_KEEP_TOUCH_MODE
+        )
+        val ctrl = meta and KeyEvent.META_CTRL_ON != 0
+        val shift = meta and KeyEvent.META_SHIFT_ON != 0
+        if (ctrl) ic.sendKeyEvent(ev(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_CTRL_LEFT, KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON))
+        if (shift) ic.sendKeyEvent(ev(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SHIFT_LEFT, KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON))
+        ic.sendKeyEvent(ev(KeyEvent.ACTION_DOWN, code, meta))
+        ic.sendKeyEvent(ev(KeyEvent.ACTION_UP, code, meta))
+        if (shift) ic.sendKeyEvent(ev(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_SHIFT_LEFT, 0))
+        if (ctrl) ic.sendKeyEvent(ev(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_CTRL_LEFT, 0))
+    }
+
+    override fun onOneHand(mode: Int) {
+        val e = settings.edit().putInt("onehand", mode)
+        if (mode > 0) e.putInt("onehand_side", mode)
+        e.apply()
     }
 
     override fun onSettings() = onBadge()
@@ -1042,65 +1394,71 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         override fun onEvent(eventType: Int, params: Bundle?) {}
 
         override fun onPartialResults(partialResults: Bundle?) {
-            if (!listening) return
-            val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
-            if (text.isBlank()) return
-            lastSpeechAt = SystemClock.uptimeMillis()
-            val ic = ic() ?: return
-            composing.setLength(0)
-            composing.append(formatVoice(text))
-            ic.setComposingText(composing, 1)
-            kv?.setVoice(true, text)
+            CrashLog.safe("voz") {
+                if (!listening) return
+                val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
+                if (text.isBlank()) return
+                lastSpeechAt = SystemClock.uptimeMillis()
+                val ic = ic() ?: return
+                composing.setLength(0)
+                composing.append(formatVoice(text))
+                ic.setComposingText(composing, 1)
+                kv?.setVoice(true, text)
+            }
         }
 
         override fun onResults(results: Bundle?) {
-            val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
-            val keepGoing = !voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
-            listening = keepGoing
-            if (!keepGoing) kv?.setVoice(false)
-            val ic = ic() ?: return
-            val out = formatVoice(text)
-            if (out.isBlank()) {
-                if (composing.isNotEmpty()) ic.commitText("", 1)
+            CrashLog.safe("voz") {
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                val keepGoing = !voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
+                listening = keepGoing
+                if (!keepGoing) kv?.setVoice(false)
+                val ic = ic() ?: return
+                val out = formatVoice(text)
+                if (out.isBlank()) {
+                    if (composing.isNotEmpty()) ic.commitText("", 1)
+                    composing.setLength(0)
+                    if (keepGoing) restartVoice()
+                    return
+                }
+                ic.commitText(out, 1)
                 composing.setLength(0)
+                lastWordWasGlide = false
+                val words = text.trim().split(Regex("\\s+")).filter { w -> w.any { it.isLetter() } }
+                for (w in words) afterWordCommitted(w.trim { !it.isLetterOrDigit() }, WordKind.TYPED)
+                kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
+                refreshSuggestions()
                 if (keepGoing) restartVoice()
-                return
             }
-            ic.commitText(out, 1)
-            composing.setLength(0)
-            lastWordWasGlide = false
-            val words = text.trim().split(Regex("\\s+")).filter { w -> w.any { it.isLetter() } }
-            for (w in words) afterWordCommitted(w.trim { !it.isLetterOrDigit() }, WordKind.TYPED)
-            kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
-            refreshSuggestions()
-            if (keepGoing) restartVoice()
         }
 
         override fun onError(error: Int) {
-            // silence / no match: keep listening until 5 s have passed without speech
-            if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) &&
-                !voiceUserStop && listening && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
-            ) {
-                if (composing.isNotEmpty()) { ic()?.finishComposingText(); composing.setLength(0) }
-                restartVoice()
-                return
+            CrashLog.safe("voz") {
+                // silence / no match: keep listening until 5 s have passed without speech
+                if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) &&
+                    !voiceUserStop && listening && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
+                ) {
+                    if (composing.isNotEmpty()) { ic()?.finishComposingText(); composing.setLength(0) }
+                    restartVoice()
+                    return
+                }
+                val hadText = composing.isNotEmpty()
+                listening = false
+                kv?.setVoice(false)
+                if (hadText) {
+                    // keep what was already heard
+                    ic()?.finishComposingText()
+                    composing.setLength(0)
+                }
+                val msg = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> if (hadText) null else "No te escuché, intenta otra vez"
+                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Sin internet para el dictado"
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Falta el permiso del micrófono"
+                    SpeechRecognizer.ERROR_CLIENT -> null
+                    else -> "No se pudo usar el micrófono (error $error)"
+                }
+                if (msg != null) Toast.makeText(this@XpKeyboardService, msg, Toast.LENGTH_SHORT).show()
             }
-            val hadText = composing.isNotEmpty()
-            listening = false
-            kv?.setVoice(false)
-            if (hadText) {
-                // keep what was already heard
-                ic()?.finishComposingText()
-                composing.setLength(0)
-            }
-            val msg = when (error) {
-                SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> if (hadText) null else "No te escuché, intenta otra vez"
-                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Sin internet para el dictado"
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Falta el permiso del micrófono"
-                SpeechRecognizer.ERROR_CLIENT -> null
-                else -> "No se pudo usar el micrófono (error $error)"
-            }
-            if (msg != null) Toast.makeText(this@XpKeyboardService, msg, Toast.LENGTH_SHORT).show()
         }
     }
 

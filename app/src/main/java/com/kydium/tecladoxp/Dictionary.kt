@@ -43,6 +43,8 @@ class Dictionary(private val userDir: File?) {
 
     /** Every word you commit, with how many times (dictionary words too: it's your personal ranking). */
     private val userWords = HashMap<String, Int>()
+    /** Words you removed from the suggestions (long-press on a suggestion). */
+    private val userBlocked = HashSet<String>()
     private var userLoaded = false
     private val bigrams = HashMap<String, HashMap<String, Int>>()
 
@@ -232,8 +234,33 @@ class Dictionary(private val userDir: File?) {
     /** Personal ranking bonus: words you use a lot float to the top. */
     private fun blocked(w: String): Boolean {
         val lw = w.lowercase()
+        if (userBlocked.isNotEmpty() && userBlocked.contains(lw)) return true
         return OFFENSIVE.contains(lw) && (userWords[lw] ?: 0) < 2
     }
+
+    /** Never suggest, predict or swipe [word] again (what you learned about it is forgotten too). */
+    @Synchronized
+    fun blockWord(word: String) {
+        val lw = word.lowercase()
+        if (lw.isEmpty()) return
+        userBlocked.add(lw)
+        userWords.remove(lw)
+        templates.remove(lw)
+        for (m in bigrams.values) m.remove(lw)
+        dirty = true
+        saveAsync()
+    }
+
+    @Synchronized
+    fun unblockWord(word: String) {
+        if (userBlocked.remove(word.lowercase())) {
+            dirty = true
+            saveAsync()
+        }
+    }
+
+    @Synchronized
+    fun blockedWords(): List<String> = userBlocked.sorted()
 
     private fun userBoost(w: String): Float {
         val c = userWords[w.lowercase()] ?: return 0f
@@ -771,6 +798,7 @@ class Dictionary(private val userDir: File?) {
     fun forceLearn(word: String) {
         val lw = word.lowercase()
         if (lw.length < 2 || !lw.all { it.isLetter() || it == '\'' }) return
+        userBlocked.remove(lw)            // you chose it on purpose
         userWords[lw] = maxOf(2, (userWords[lw] ?: 0) + 1)
         dirty = true
     }
@@ -845,6 +873,8 @@ class Dictionary(private val userDir: File?) {
                 val t = line.split('\t')
                 if (t.size == 3) bigrams.getOrPut(t[0]) { HashMap() }[t[1]] = t[2].toIntOrNull() ?: 1
             }
+            val xf = File(dir, "blocked_words.txt")
+            if (xf.exists()) xf.forEachLine { line -> if (line.isNotBlank()) userBlocked.add(line.trim()) }
         } catch (_: Exception) {
         }
     }
@@ -859,8 +889,10 @@ class Dictionary(private val userDir: File?) {
         for ((k, v) in bigrams) bg[k] = HashMap(v)
         val tp = ArrayList<Pair<String, FloatArray>>()
         for ((w, list) in templates) for (t in list) tp.add(Pair(w, t.copyOf()))
+        val bl = userBlocked.toList()
         Thread {
             try {
+                File(dir, "blocked_words.txt").writeText(bl.joinToString("\n"))
                 File(dir, "user_words.txt").writeText(uw.entries.joinToString("\n") { "${it.key}\t${it.value}" })
                 val sb = StringBuilder()
                 for ((p, m) in bg) for ((n, c) in m) sb.append(p).append('\t').append(n).append('\t').append(c).append('\n')
@@ -912,6 +944,7 @@ class Dictionary(private val userDir: File?) {
     fun addWord(word: String): Boolean {
         val lw = word.trim().lowercase()
         if (lw.length < 2 || !lw.all { it.isLetter() || it == '\'' }) return false
+        userBlocked.remove(lw)
         userWords[lw] = maxOf(6, userWords[lw] ?: 0)
         dirty = true
         saveAsync()
@@ -927,6 +960,7 @@ class Dictionary(private val userDir: File?) {
 
     @Synchronized
     fun clearLearning() {
+        userBlocked.clear()
         userWords.clear()
         bigrams.clear()
         templates.clear()

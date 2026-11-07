@@ -33,7 +33,7 @@ class Key(
 
 enum class LayoutType { LETTERS, SYMBOLS, SYMBOLS2 }
 
-class KbLayout(val type: LayoutType, val rows: List<List<Key>>) {
+class KbLayout(val type: LayoutType, val rows: List<List<Key>>, val numberRow: Boolean = false) {
     val allKeys: List<Key> = rows.flatten()
 }
 
@@ -55,24 +55,38 @@ object Layouts {
         Key("↵", Codes.ENTER, 1.5f)
     )
 
-    fun letters() = KbLayout(
-        LayoutType.LETTERS, listOf(
+    /** @param numberRow adds a row of numbers on top (then the letters don't show number hints). */
+    fun letters(numberRow: Boolean = false): KbLayout {
+        fun h(s: String) = if (numberRow) "" else s
+        val rows = ArrayList<List<Key>>()
+        if (numberRow) rows.add(
             listOf(
-                ch("q", "1", "1"), ch("w", "2", "2"), ch("e", "3 é è ê ë €", "3"),
-                ch("r", "4", "4"), ch("t", "5", "5"), ch("y", "6 ý ÿ ¥", "6"),
-                ch("u", "7 ú ü ù û", "7"), ch("i", "8 í ï ì î", "8"),
-                ch("o", "9 ó ö ò ô õ º", "9"), ch("p", "0 ¶", "0")
-            ),
+                ch("1", "¹ ½ ⅓ ¼"), ch("2", "² ⅔"), ch("3", "³ ¾"), ch("4", "⁴"), ch("5"),
+                ch("6"), ch("7"), ch("8"), ch("9"), ch("0", "∅ ⁿ")
+            )
+        )
+        rows.add(
+            listOf(
+                ch("q", "1", h("1")), ch("w", "2", h("2")), ch("e", "3 é è ê ë €", h("3")),
+                ch("r", "4", h("4")), ch("t", "5", h("5")), ch("y", "6 ý ÿ ¥", h("6")),
+                ch("u", "7 ú ü ù û", h("7")), ch("i", "8 í ï ì î", h("8")),
+                ch("o", "9 ó ö ò ô õ º", h("9")), ch("p", "0 ¶", h("0"))
+            )
+        )
+        rows.add(
             listOf(
                 ch("a", "á à â ä ã å æ ª"), ch("s", "ß $ §"), ch("d"), ch("f"), ch("g"),
                 ch("h"), ch("j"), ch("k"), ch("l"), ch("ñ", "n")
-            ),
+            )
+        )
+        rows.add(
             listOf(Key("⇧", Codes.SHIFT, 1.5f)) +
                 listOf(ch("z"), ch("x"), ch("c", "ç ©"), ch("v"), ch("b"), ch("n", "ñ"), ch("m")) +
-                listOf(Key("⌫", Codes.DELETE, 1.5f)),
-            bottomRow("?123", Codes.SYMBOLS, ch(",", EMOJIS), ch(".", PUNCT))
+                listOf(Key("⌫", Codes.DELETE, 1.5f))
         )
-    )
+        rows.add(bottomRow("?123", Codes.SYMBOLS, ch(",", EMOJIS), ch(".", PUNCT)))
+        return KbLayout(LayoutType.LETTERS, rows, numberRow)
+    }
 
     fun symbols() = KbLayout(
         LayoutType.SYMBOLS, listOf(
