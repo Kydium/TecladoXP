@@ -1371,7 +1371,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             recognizer = it
         }
         // Android 13+: one continuous session (no restart and no beep between sentences)
-        segmented = Build.VERSION.SDK_INT >= 33 && !settings.getBoolean("voice_seg_fail", false)
+        segmented = false   // back to Google's normal recognizer (restarts after each sentence, with its own sound)
         val intent = voiceIntent(segmented)
         voiceIntent = intent
         voiceStartAt = SystemClock.uptimeMillis()
@@ -1465,8 +1465,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             kv?.setVoice(true)
             val r = recognizer ?: return endVoice()
             val i = voiceIntent ?: return endVoice()
-            muteBeep()
-            main.postDelayed({
+                main.postDelayed({
                 if (listening && !voiceUserStop) try { r.startListening(i) } catch (_: Exception) { endVoice() }
             }, 80)
         } else {
@@ -1502,7 +1501,6 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         voiceNeedsSpace = (ic()?.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
         listening = true
         kv?.setVoice(true)
-        muteBeep()
         VoiceLog.add("↻ reinicio (modo clásico)")
         main.postDelayed({
             if (listening && !voiceUserStop) {
