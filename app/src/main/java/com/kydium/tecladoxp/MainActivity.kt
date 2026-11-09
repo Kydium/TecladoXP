@@ -252,6 +252,7 @@ class MainActivity : Activity() {
         root.addView(bar)
         when (p) {
             "look" -> {
+                renderCustomTheme()
                 renderThemes(lvl)
                 renderStylePicker(lvl, "Barra de experiencia", "Cómo se ve tu nivel y tu barra de XP en el teclado.",
                     XpBarStyles.all, "xpstyle") { o, unlocked, selected -> BarSwatch(this, o, unlocked, selected) }
@@ -597,6 +598,157 @@ class MainActivity : Activity() {
         root.addView(c)
     }
 
+    private val REQ_THEME_IMG = 47
+
+    /** Your own theme: a picture of yours behind the keys, with an outline on the keys. */
+    private fun renderCustomTheme() {
+        val c = card()
+        sectionTitle(c, "🖼️ Tu propio tema")
+        if (!CustomTheme.hasImage(this)) {
+            c.addView(text("Pon una foto o imagen tuya de fondo del teclado, con las teclas transparentes y un contorno del color que quieras.",
+                12.5f, muted).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
+            c.addView(button("Elegir imagen", true) { pickThemeImage() },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            root.addView(c)
+            return
+        }
+        val active = settings.getString("theme", "noche") == CustomTheme.ID
+        val pick = settings.getInt("ct_bmode", 0) == 1
+        val preview = CustomThemePreview(this)
+        c.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        if (pick) c.addView(text("👆 Toca la imagen en el punto de donde quieres sacar el color del contorno.", 12.5f, accent2)
+            .apply { setPadding(0, dpi(8f), 0, 0) })
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dpi(10f), 0, 0)
+        }
+        row.addView(button(if (active) "✓ En uso" else "Usar este tema", !active) {
+            settings.edit().putString("theme", CustomTheme.ID).apply()
+            Toast.makeText(this, "Tema aplicado: abre el teclado para verlo", Toast.LENGTH_SHORT).show()
+            render()
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f).apply { rightMargin = dpi(3f) })
+        row.addView(button("Cambiar", false) { pickThemeImage() },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(3f); rightMargin = dpi(3f) })
+        row.addView(button("Quitar", false) {
+            CustomTheme.remove(this)
+            if (active) settings.edit().putString("theme", "noche").apply()
+            render()
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(3f) })
+        c.addView(row)
+        optionRow(c, "Oscurecer la imagen", "Para que las letras se lean bien", "ct_dim", 25,
+            listOf(0 to "No", 25 to "Poco", 45 to "Medio", 65 to "Mucho"))
+        optionRow(c, "Teclas", "Qué tanto se ve la imagen a través de las teclas", "ct_keys", 1,
+            listOf(0 to "Transparentes", 1 to "Medias", 2 to "Sólidas"))
+        switchRow(c, "Teclas claras", "Teclas blancas con letras oscuras (para imágenes claras)", "ct_light", false) { preview.invalidate() }
+        switchRow(c, "Contorno en las teclas", "Una línea de color alrededor de cada tecla", "ct_border", true) { render() }
+        if (settings.getBoolean("ct_border", true)) {
+            optionRow(c, "Color del contorno", "Automático saca el color más vivo de tu imagen", "ct_bmode", 0,
+                listOf(0 to "Automático", 1 to "De la imagen", 2 to "Blanco", 3 to "Negro"))
+        }
+        root.addView(c)
+    }
+
+    private fun pickThemeImage() {
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                setType("image/*")
+            }, REQ_THEME_IMG)
+        } catch (_: Exception) {
+            Toast.makeText(this, "No se pudo abrir la galería", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Preview of your theme; when the outline color comes "from the picture", tap to choose the spot. */
+    private inner class CustomThemePreview(ctx: Context) : View(ctx) {
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val r = RectF()
+        private val src = android.graphics.Rect()
+
+        override fun onMeasure(wSpec: Int, hSpec: Int) {
+            val w = MeasureSpec.getSize(wSpec)
+            setMeasuredDimension(w, (w * CustomTheme.KEYBOARD_ASPECT).toInt())
+        }
+
+        override fun onDraw(c: Canvas) {
+            val bmp = CustomTheme.bitmap(context) ?: return
+            val t = CustomTheme.theme(context)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val vr = CustomTheme.visibleRect(bmp.width, bmp.height, CustomTheme.KEYBOARD_ASPECT)
+            src.set(vr[0], vr[1], vr[2], vr[3])
+            r.set(0f, 0f, w, h)
+            p.isFilterBitmap = true
+            p.color = Color.BLACK
+            c.drawBitmap(bmp, src, r, p)
+            if (t.dim > 0) {
+                p.color = Color.argb(t.dim * 255 / 100, 0, 0, 0)
+                c.drawRect(0f, 0f, w, h, p)
+            }
+            // mini keyboard: 4 rows of keys under a suggestion area
+            val top = h * 0.22f
+            val rows = intArrayOf(10, 10, 9, 5)
+            val rh = (h - top) / 4f
+            val kw = w / 10f
+            for (ri in 0 until 4) {
+                val n = rows[ri]
+                val widths = if (ri == 3) floatArrayOf(1.5f, 1.2f, 4.6f, 1.2f, 1.5f) else FloatArray(n) { 1f }
+                var x = (w - widths.sum() * kw) / 2f
+                for (k in 0 until n) {
+                    r.set(x + dp(2f), top + ri * rh + dp(3f), x + widths[k] * kw - dp(2f), top + (ri + 1) * rh - dp(3f))
+                    p.color = if (ri == 3 && k == 4) t.accent else t.key
+                    c.drawRoundRect(r, dp(5f), dp(5f), p)
+                    if (t.border != 0) {
+                        p.style = Paint.Style.STROKE
+                        p.strokeWidth = dp(1.2f)
+                        p.color = t.border
+                        c.drawRoundRect(r, dp(5f), dp(5f), p)
+                        p.style = Paint.Style.FILL
+                    }
+                    x += widths[k] * kw
+                }
+            }
+            // XP bar
+            p.color = t.accent
+            r.set(w * 0.12f, h * 0.12f, w * 0.7f, h * 0.15f)
+            c.drawRoundRect(r, dp(3f), dp(3f), p)
+            // picked spot
+            if (settings.getInt("ct_bmode", 0) == 1 && settings.getBoolean("ct_border", true)) {
+                val px = settings.getFloat("ct_px", 0.5f) * w
+                val py = settings.getFloat("ct_py", 0.5f) * h
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = dp(3f)
+                p.color = Color.WHITE
+                c.drawCircle(px, py, dp(13f), p)
+                p.strokeWidth = dp(1.5f)
+                p.color = Color.BLACK
+                c.drawCircle(px, py, dp(15f), p)
+                p.style = Paint.Style.FILL
+                p.color = t.border
+                c.drawCircle(px, py, dp(9f), p)
+            }
+            // rounded corners look
+            p.style = Paint.Style.STROKE
+            p.strokeWidth = dp(1f)
+            p.color = Color.argb(80, 255, 255, 255)
+            r.set(0f, 0f, w, h)
+            c.drawRoundRect(r, dp(12f), dp(12f), p)
+            p.style = Paint.Style.FILL
+        }
+
+        override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+            if (settings.getInt("ct_bmode", 0) != 1 || !settings.getBoolean("ct_border", true)) return false
+            parent?.requestDisallowInterceptTouchEvent(true)
+            settings.edit()
+                .putFloat("ct_px", (e.x / width).coerceIn(0f, 1f))
+                .putFloat("ct_py", (e.y / height).coerceIn(0f, 1f))
+                .apply()
+            invalidate()
+            return true
+        }
+    }
+
     private fun renderThemes(lvl: Int) {
         val c = card()
         sectionTitle(c, "Temas")
@@ -632,7 +784,7 @@ class MainActivity : Activity() {
         root.addView(c)
     }
 
-    private fun switchRow(parent: LinearLayout, label: String, desc: String, key: String, def: Boolean) {
+    private fun switchRow(parent: LinearLayout, label: String, desc: String, key: String, def: Boolean, onChange: (() -> Unit)? = null) {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -645,7 +797,10 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         val sw = Switch(this)
         sw.isChecked = settings.getBoolean(key, def)
-        sw.setOnCheckedChangeListener { _, checked -> settings.edit().putBoolean(key, checked).apply() }
+        sw.setOnCheckedChangeListener { _, checked ->
+            settings.edit().putBoolean(key, checked).apply()
+            onChange?.invoke()
+        }
         row.addView(sw)
         row.setOnClickListener { sw.isChecked = !sw.isChecked }
         parent.addView(row)
@@ -711,6 +866,18 @@ class MainActivity : Activity() {
                 CrashLog.log(e, "copia")
                 Toast.makeText(this, "No se pudo guardar la copia: ${e.message}", Toast.LENGTH_LONG).show()
             }
+            return
+        }
+        if (requestCode == REQ_THEME_IMG) {
+            Toast.makeText(this, "Cargando imagen…", Toast.LENGTH_SHORT).show()
+            Thread {
+                val ok = try { CustomTheme.importImage(this, uri) } catch (e: Exception) { CrashLog.log(e, "tema"); false }
+                runOnUiThread {
+                    if (ok) settings.edit().putString("theme", CustomTheme.ID).apply()
+                    Toast.makeText(this, if (ok) "✅ Imagen lista: tu tema ya está en uso" else "No se pudo abrir esa imagen", Toast.LENGTH_LONG).show()
+                    render()
+                }
+            }.start()
             return
         }
         if (requestCode == REQ_BACKUP_AUTO) {

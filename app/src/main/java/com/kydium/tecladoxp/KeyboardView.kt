@@ -179,6 +179,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val bgPaint = Paint()
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var bgShader: Shader? = null
+
+    /** Picture behind the keys (your own theme), or null for the theme's colors. */
+    var bgImage: android.graphics.Bitmap? = null
+        set(v) { field = v; invalidate() }
+    private val srcRect = android.graphics.Rect()
+    private val dstRect = RectF()
     private val rect = RectF()
 
     // ------------------------------------------------------------------ touch state
@@ -1226,9 +1232,24 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val now = SystemClock.uptimeMillis()
         val w = width.toFloat()
 
-        if (bgShader == null) bgShader = LinearGradient(0f, 0f, 0f, height.toFloat(), t.bgTop, t.bgBottom, Shader.TileMode.CLAMP)
-        bgPaint.shader = bgShader
-        canvas.drawRect(0f, 0f, w, height.toFloat(), bgPaint)
+        val img = bgImage
+        if (img != null && width > 0 && height > 0) {
+            val r = CustomTheme.visibleRect(img.width, img.height, height.toFloat() / width)
+            srcRect.set(r[0], r[1], r[2], r[3])
+            dstRect.set(0f, 0f, w, height.toFloat())
+            bgPaint.shader = null
+            bgPaint.color = Color.BLACK
+            bgPaint.isFilterBitmap = true
+            canvas.drawBitmap(img, srcRect, dstRect, bgPaint)
+            if (t.dim > 0) {
+                bgPaint.color = Color.argb(t.dim * 255 / 100, 0, 0, 0)
+                canvas.drawRect(0f, 0f, w, height.toFloat(), bgPaint)
+            }
+        } else {
+            if (bgShader == null) bgShader = LinearGradient(0f, 0f, 0f, height.toFloat(), t.bgTop, t.bgBottom, Shader.TileMode.CLAMP)
+            bgPaint.shader = bgShader
+            canvas.drawRect(0f, 0f, w, height.toFloat(), bgPaint)
+        }
 
         drawStrip(canvas, now)
         drawKeys(canvas, now)
@@ -1404,6 +1425,14 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             if (k.code == Codes.ENTER) keyPaint.color = if (k === pressed) t.keyPressed else t.accent
             if (k.code == Codes.SHIFT && shiftState > 0) keyPaint.color = if (shiftState == 2) t.accent else t.keyPressed
             c.drawRoundRect(rect, radius, radius, keyPaint)
+            if (t.border != 0) {
+                linePaint.shader = null
+                linePaint.style = Paint.Style.STROKE
+                linePaint.strokeWidth = dp(1.5f)
+                linePaint.color = t.border
+                c.drawRoundRect(rect, radius, radius, linePaint)
+                linePaint.style = Paint.Style.FILL
+            }
             if (t.rainbow) {
                 val hue = ((idx * 13) % 360).toFloat()
                 linePaint.style = Paint.Style.STROKE

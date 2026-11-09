@@ -13,7 +13,11 @@ class KbTheme(
     val textMuted: Int,
     val accent: Int,
     val accent2: Int,
-    val rainbow: Boolean = false
+    val rainbow: Boolean = false,
+    /** Outline color of the keys (0 = none). */
+    val border: Int = 0,
+    /** How much the background picture is darkened (0..100), for your own theme. */
+    val dim: Int = 0
 )
 
 private fun c(v: Long) = v.toInt()

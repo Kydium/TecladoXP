@@ -230,8 +230,14 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private fun applySettings() {
         val v = kv ?: return
-        v.theme = Themes.byId(settings.getString("theme", "noche"))
-            .let { if (it.unlockLevel <= XpManager.level()) it else Themes.all[0] }
+        if (settings.getString("theme", "noche") == CustomTheme.ID && CustomTheme.hasImage(this)) {
+            v.theme = CustomTheme.theme(this)
+            v.bgImage = CustomTheme.bitmap(this)
+        } else {
+            v.bgImage = null
+            v.theme = Themes.byId(settings.getString("theme", "noche"))
+                .let { if (it.unlockLevel <= XpManager.level()) it else Themes.all[0] }
+        }
         val lvl = XpManager.level()
         v.xpStyle = XpBarStyles.byId(settings.getString("xpstyle", "clasica"))
             .let { if (it.unlockLevel <= lvl) it.id else "clasica" }
