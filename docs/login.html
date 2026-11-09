@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teclado XP · Iniciar sesión</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #0f1220; color: #e8eaf6; font-family: system-ui, -apple-system, Roboto, sans-serif; }
+  .card { width: min(380px, 90vw); background: #1a1e33; border-radius: 20px; padding: 28px 24px; text-align: center;
+    box-shadow: 0 10px 40px rgba(0,0,0,.4); }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p { color: #a3a8c3; font-size: 14px; line-height: 1.5; margin: 8px 0 20px; }
+  .btn { display: block; width: 100%; box-sizing: border-box; padding: 14px; border: 0; border-radius: 14px;
+    font-size: 16px; font-weight: 600; cursor: pointer; text-decoration: none; margin-top: 10px; }
+  .google { background: #fff; color: #222; }
+  .back { background: #7c5cff; color: #fff; }
+  .link { background: transparent; color: #a3a8c3; font-weight: 400; font-size: 14px; }
+  .who { font-weight: 600; color: #fff; }
+  .err { color: #ff8a8a; font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>⌨️ Teclado XP</h1>
+  <p id="msg">Inicia sesión con Google para guardar tu nivel y tu progreso en tu cuenta .</p>
+  <div id="out">
+    <button class="btn google" id="login">Entrar con Google</button>
+  </div>
+  <div id="in" hidden>
+    <a class="btn back" id="back" href="#">Volver a Teclado XP</a>
+    <button class="btn link" id="other">Usar otra cuenta</button>
+  </div>
+  <div class="err" id="err"></div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-app-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/firebase@10.12.2/firebase-auth-compat.js"></script>
+<script>
+  window.FIREBASE_CONFIG = {
+    apiKey: "AIzaSyCRKaG35O-EjV8vtX-xXJ52zZKr56hRZsk",
+    authDomain: "bingo-a26fb.firebaseapp.com",
+    databaseURL: "https://bingo-a26fb-default-rtdb.firebaseio.com",
+    projectId: "bingo-a26fb",
+    appId: "1:534345624644:web:00342fed460aa83df16011"
+  };
+</script>
+<script>
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  var auth = firebase.auth();
+  var provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  var $ = function (id) { return document.getElementById(id); };
+
+  function backLink(u) {
+    // hands the session to the app (only on this phone)
+    var q = 'rt=' + encodeURIComponent(u.refreshToken) + '&uid=' + encodeURIComponent(u.uid) +
+      '&email=' + encodeURIComponent(u.email || '');
+    return 'intent://login?' + q + '#Intent;scheme=tecladoxp;package=com.kydium.tecladoxp;end';
+  }
+  function show(u) {
+    $('out').hidden = !!u;
+    $('in').hidden = !u;
+    if (u) {
+      $('msg').innerHTML = 'Conectado como <span class="who"></span>.<br>Toca el botón para volver al teclado.';
+      $('msg').querySelector('.who').textContent = u.email || u.displayName || 'tu cuenta';
+      $('back').href = backLink(u);
+    }
+  }
+  auth.getRedirectResult().then(function (r) {
+    if (r && r.user) location.href = backLink(r.user);   // just logged in: go back to the app
+  }).catch(function (e) { $('err').textContent = e.message; });
+  auth.onAuthStateChanged(show);
+  $('login').onclick = function () {
+    $('err').textContent = '';
+    auth.signInWithPopup(provider).then(function (r) {
+      if (r && r.user) location.href = backLink(r.user);
+    }).catch(function (e) {
+      if (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment') return auth.signInWithRedirect(provider);
+      $('err').textContent = e.message;
+    });
+  };
+  $('other').onclick = function () { auth.signOut(); };
+</script>
+</body>
+</html>

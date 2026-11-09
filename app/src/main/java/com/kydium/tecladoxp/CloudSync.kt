@@ -19,7 +19,7 @@ import java.net.URLEncoder
 object CloudSync {
     private const val API_KEY = "AIzaSyCRKaG35O-EjV8vtX-xXJ52zZKr56hRZsk"
     private const val DB = "https://bingo-a26fb-default-rtdb.firebaseio.com"
-    const val LOGIN_PAGE = "https://kydium.github.io/MyWallet/teclado.html"
+    const val LOGIN_PAGE = "https://kydium.github.io/TecladoXP/login.html"
     private const val EVERY = 20L * 60_000          // upload at most every 20 minutes
     private val PREFS = listOf("xp", "settings", "touch")
     private val FILES = listOf("user_words.txt", "blocked_words.txt")

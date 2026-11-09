@@ -1622,7 +1622,7 @@ class MainActivity : Activity() {
         sectionTitle(c, "☁️ Tu cuenta")
         if (!CloudSync.signedIn(this)) {
             c.addView(text(
-                "Inicia sesión con Google (la misma cuenta de My Wallet) y tu nivel, XP, logros, ajustes y palabras " +
+                "Inicia sesión con Google (tu cuenta de Google) y tu nivel, XP, logros, ajustes y palabras " +
                     "aprendidas se guardan solos en tu cuenta. Si cambias de celular, solo vuelves a iniciar sesión.",
                 12.5f, muted
             ).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
