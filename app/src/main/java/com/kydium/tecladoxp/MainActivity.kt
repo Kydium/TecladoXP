@@ -1157,8 +1157,10 @@ class MainActivity : Activity() {
         switchRow(x, "Mostrar +XP flotante", "", "floatxp", true)
         optionRow(x, "Sumar la XP después de", "Tiempo sin escribir para que la XP se sume a la barra", "xppause", 1000,
             listOf(500 to "0.5 s", 1000 to "1 s", 2000 to "2 s", 3000 to "3 s"))
-        optionRow(x, "Dictado: esperar en silencio", "Cuánto espera el micrófono sin que hables antes de terminar", "voicesilence", 5000,
-            listOf(2000 to "2 s", 3000 to "3 s", 5000 to "5 s", 8000 to "8 s"))
+        optionRow(x, "Dictado: esperar en silencio", "Cuánto espera el micrófono sin que hables antes de apagarse " +
+            "(para que te dé tiempo de pensar qué decir). Siempre puedes apagarlo tocando el micrófono.", "voicesilence", 5000,
+            listOf(3000 to "3 segundos", 5000 to "5 segundos", 10000 to "10 segundos", 20000 to "20 segundos",
+                30000 to "30 segundos", 60000 to "1 minuto", 0 to "Sin límite (hasta que lo toque)"))
         root.addView(x)
     }
 

@@ -1337,7 +1337,9 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private var listening = false
 
     /** Keeps listening until this long passes without you saying anything. */
-    private val voiceSilenceMs: Long get() = settings.getInt("voicesilence", 5000).toLong()
+    private val voiceSilenceSetting: Long get() = settings.getInt("voicesilence", 5000).toLong()
+    /** "Sin límite" (0) still turns off after 5 minutes of silence, to save battery. */
+    private val voiceSilenceMs: Long get() = voiceSilenceSetting.let { if (it <= 0L) 5 * 60_000L else it }
     private var voiceUserStop = false
     private var lastSpeechAt = 0L
     private var voiceIntent: Intent? = null
@@ -1404,8 +1406,8 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, minOf(voiceSilenceMs, 60_000L))
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, minOf(voiceSilenceMs, 60_000L))
             // the session ends only after this much silence; each sentence arrives in onSegmentResults
             if (seg) putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS)
         }
@@ -1444,6 +1446,28 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         // the next sentence continues after a space
         voiceCaps = false
         voiceNeedsSpace = (ic.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
+    }
+
+    /**
+     * The recognizer stopped by itself. Google may stop sooner than the silence time you chose
+     * (for example while you think what to say): then it starts again quietly.
+     */
+    private fun voiceStoppedByItself() {
+        if (!voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs) {
+            if (composing.isNotEmpty()) { ic()?.finishComposingText(); composing.setLength(0) }
+            voiceNeedsSpace = (ic()?.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
+            voiceCaps = false
+            listening = true
+            kv?.setVoice(true)
+            val r = recognizer ?: return endVoice()
+            val i = voiceIntent ?: return endVoice()
+            muteBeep()
+            main.postDelayed({
+                if (listening && !voiceUserStop) try { r.startListening(i) } catch (_: Exception) { endVoice() }
+            }, 80)
+        } else {
+            endVoice()
+        }
     }
 
     private fun endVoice() {
@@ -1511,7 +1535,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         }
 
         override fun onEndOfSegmentedSession() {
-            CrashLog.safe("voz") { if (listening || composing.isNotEmpty()) endVoice() }
+            CrashLog.safe("voz") { if (listening || composing.isNotEmpty()) voiceStoppedByItself() }
         }
         override fun onRmsChanged(rmsdB: Float) { kv?.setVoiceLevel(rmsdB) }
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -1538,7 +1562,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
                 if (segmented) {
                     commitVoice(text)
-                    endVoice()
+                    voiceStoppedByItself()
                     return
                 }
                 val keepGoing = !voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
@@ -1583,8 +1607,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
                         return
                     }
                     if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                        // the silence time passed
-                        endVoice()
+                        voiceStoppedByItself()
                         return
                     }
                 }
