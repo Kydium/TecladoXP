@@ -95,6 +95,7 @@ class MainActivity : Activity() {
         if (rt == handledLogin) return true      // same intent again (e.g. activity recreated)
         handledLogin = rt
         CloudSync.saveLogin(this, rt, uid, data.getQueryParameter("email") ?: "")
+        page = "account"
         Toast.makeText(this, "Conectado. Revisando tu cuenta…", Toast.LENGTH_SHORT).show()
         Thread {
             val cloud = try { CloudSync.fetchMeta(this) } catch (_: Exception) { null }
@@ -228,23 +229,96 @@ class MainActivity : Activity() {
             setPadding(0, dpi(2f), 0, dpi(4f))
         })
 
-        renderSetup()
-        renderUpdate()
-        renderBackup()
-        renderErrorLog()
-        renderProfile(lvl, into, need)
-        renderStats()
-        renderAchievements()
-        renderThemes(lvl)
-        renderStylePicker(lvl, "Barra de experiencia", "Cómo se ve tu nivel y tu barra de XP en el teclado.",
-            XpBarStyles.all, "xpstyle") { o, unlocked, selected -> BarSwatch(this, o, unlocked, selected) }
-        renderStylePicker(lvl, "Estela al deslizar", "El rastro que deja tu dedo al escribir deslizando.",
-            TrailStyles.all, "trailstyle") { o, unlocked, selected -> TrailSwatch(this, o, unlocked, selected) }
-        renderSettings()
-        renderMyWords()
-        renderLearnChats()
-        renderTrainer()
-        renderTest()
+        val p = page
+        if (p == null) {
+            renderSetup()
+            renderUpdate()
+            renderErrorLog()
+            renderProfile(lvl, into, need)
+            renderMenu()
+            renderTest()
+            return
+        }
+        // a category page: title + back
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpi(10f), 0, dpi(6f))
+        }
+        bar.addView(button("←  Volver", false) { goPage(null) })
+        bar.addView(text(pages.firstOrNull { it.id == p }?.let { "${it.icon}  ${it.title}" } ?: "", 19f, textC, true).apply {
+            setPadding(dpi(14f), 0, 0, 0)
+        })
+        root.addView(bar)
+        when (p) {
+            "look" -> {
+                renderThemes(lvl)
+                renderStylePicker(lvl, "Barra de experiencia", "Cómo se ve tu nivel y tu barra de XP en el teclado.",
+                    XpBarStyles.all, "xpstyle") { o, unlocked, selected -> BarSwatch(this, o, unlocked, selected) }
+                renderStylePicker(lvl, "Estela al deslizar", "El rastro que deja tu dedo al escribir deslizando.",
+                    TrailStyles.all, "trailstyle") { o, unlocked, selected -> TrailSwatch(this, o, unlocked, selected) }
+            }
+            "keyboard" -> renderKeyboardSettings()
+            "writing" -> { renderWritingSettings(); renderMyWords(); renderLearnChats() }
+            "swipe" -> renderTrainer()
+            "sound" -> renderSoundSettings()
+            "progress" -> { renderStats(); renderAchievements(); renderXpSettings() }
+            "account" -> renderBackup()
+            "help" -> renderHelp()
+        }
+    }
+
+    // ---------------------------------------------------------------- categories
+
+    private class Page(val id: String, val icon: String, val title: String, val desc: String)
+
+    private val pages = listOf(
+        Page("look", "🎨", "Apariencia", "Temas, barra de XP y estela"),
+        Page("keyboard", "⌨️", "Teclado", "Altura, separación, números, una mano"),
+        Page("writing", "✍️", "Escritura", "Idioma, corrector, tus palabras"),
+        Page("swipe", "🎯", "Deslizar", "Entrenador y mejorar con tus datos"),
+        Page("sound", "🔊", "Sonido y vibración", "Vibración, clic y sonidos de XP"),
+        Page("progress", "⭐", "Progreso", "Estadísticas, logros y XP"),
+        Page("account", "☁️", "Cuenta y copias", "Guardar tu progreso en Google"),
+        Page("help", "❓", "Ayuda", "Gestos, atajos y reiniciar")
+    )
+
+    private var page: String? = null
+
+    private fun goPage(p: String?) {
+        if (training) stopTraining(false)
+        page = p
+        render()
+        scroll?.scrollTo(0, 0)
+    }
+
+    @Deprecated("framework callback")
+    override fun onBackPressed() {
+        if (page != null) goPage(null) else @Suppress("DEPRECATION") super.onBackPressed()
+    }
+
+    private fun renderMenu() {
+        root.addView(text("Ajustes", 13f, muted).apply { setPadding(dpi(4f), dpi(16f), 0, dpi(6f)) })
+        var line: LinearLayout? = null
+        pages.forEachIndexed { i, pg ->
+            if (i % 2 == 0) {
+                line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                root.addView(line)
+            }
+            val tile = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(cardBg, 18f)
+                setPadding(dpi(14f), dpi(14f), dpi(12f), dpi(14f))
+                isClickable = true
+                setOnClickListener { goPage(pg.id) }
+            }
+            tile.addView(text(pg.icon, 24f, textC))
+            tile.addView(text(pg.title, 15.5f, textC, true).apply { setPadding(0, dpi(6f), 0, dpi(2f)) })
+            tile.addView(text(pg.desc, 11.5f, muted))
+            line?.addView(tile, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                leftMargin = dpi(4f); rightMargin = dpi(4f); topMargin = dpi(4f); bottomMargin = dpi(4f)
+            })
+        }
     }
 
     private fun styleButton(tv: TextView, primary: Boolean) {
@@ -731,8 +805,7 @@ class MainActivity : Activity() {
         parent.addView(row)
     }
 
-    private fun renderSettings() {
-        // ---- writing
+    private fun renderWritingSettings() {
         val w = card()
         sectionTitle(w, "✍️ Escritura")
         w.addView(text("Idioma del teclado", 15f, textC).apply { setPadding(0, 0, 0, dpi(8f)) })
@@ -757,8 +830,9 @@ class MainActivity : Activity() {
         switchRow(w, "Sugerir emojis", "Ej: \"jaja\" → 😂 (tócalo y reemplaza la palabra)", "emojisug", true)
         switchRow(w, "Doble espacio = punto", "", "doublespace", true)
         root.addView(w)
+    }
 
-        // ---- keyboard look & feel
+    private fun renderKeyboardSettings() {
         val k = card()
         sectionTitle(k, "⌨️ Teclado")
         optionRow(k, "Altura del teclado", "", "height", 1,
@@ -774,8 +848,9 @@ class MainActivity : Activity() {
         optionRow(k, "Mantener presionado", "Cuánto hay que mantener una tecla para ver acentos y símbolos", "longpress", 320,
             listOf(220 to "Rápido", 320 to "Normal", 450 to "Lento", 600 to "Muy lento"))
         root.addView(k)
+    }
 
-        // ---- sound & vibration
+    private fun renderSoundSettings() {
         val sv = card()
         sectionTitle(sv, "🔊 Sonido y vibración")
         switchRow(sv, "Vibración al tocar", "", "vibrate", true)
@@ -786,8 +861,9 @@ class MainActivity : Activity() {
         soundRow(sv, "Sonido al ganar XP", SoundFx.ORB_FILE, REQ_ORB)
         soundRow(sv, "Sonido al subir de nivel", SoundFx.LEVEL_FILE, REQ_LEVEL)
         root.addView(sv)
+    }
 
-        // ---- xp & dictation
+    private fun renderXpSettings() {
         val x = card()
         sectionTitle(x, "⭐ Experiencia y dictado")
         switchRow(x, "Mostrar +XP flotante", "", "floatxp", true)
@@ -796,8 +872,9 @@ class MainActivity : Activity() {
         optionRow(x, "Dictado: esperar en silencio", "Cuánto espera el micrófono sin que hables antes de terminar", "voicesilence", 5000,
             listOf(2000 to "2 s", 3000 to "3 s", 5000 to "5 s", 8000 to "8 s"))
         root.addView(x)
+    }
 
-        // ---- gestures help
+    private fun renderHelp() {
         val g = card()
         sectionTitle(g, "👆 Gestos y atajos")
         g.addView(text(
