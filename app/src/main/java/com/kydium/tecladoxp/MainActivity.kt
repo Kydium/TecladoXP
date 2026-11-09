@@ -577,6 +577,21 @@ class MainActivity : Activity() {
             }
             return
         }
+        if (requestCode == REQ_BACKUP_AUTO) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            } catch (_: Exception) {
+                // some providers don't keep the permission: we'll still try, and show an error if it fails
+            }
+            settings.edit().putString("auto_backup_uri", uri.toString()).remove("auto_backup_error").apply()
+            Backup.autoIfDue(this, force = true) { ok ->
+                runOnUiThread {
+                    Toast.makeText(this, if (ok) "✅ Copia automática activada" else "No se pudo escribir en ese archivo", Toast.LENGTH_LONG).show()
+                    render()
+                }
+            }
+            return
+        }
         if (requestCode == REQ_BACKUP_LOAD) {
             AlertDialog.Builder(this)
                 .setTitle("¿Restaurar esta copia?")
@@ -1172,6 +1187,7 @@ class MainActivity : Activity() {
 
     private val REQ_BACKUP_SAVE = 44
     private val REQ_BACKUP_LOAD = 45
+    private val REQ_BACKUP_AUTO = 46
 
     /** Save / restore everything (level, XP, settings, learned words…) as a file, e.g. in Google Drive. */
     private fun renderBackup() {
@@ -1212,6 +1228,50 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(4f) })
         c.addView(row)
+
+        // automatic copy
+        val auto = Backup.autoUri(this)
+        val err = settings.getString("auto_backup_error", null)
+        c.addView(text(
+            when {
+                auto == null -> "🔄 Copia automática: desactivada. Actívala, elige dónde guardarla (Drive) una sola vez " +
+                    "y después se actualiza sola cada vez que cierras el teclado (como máximo cada 6 horas)."
+                err != null -> "⚠️ La copia automática falló la última vez: $err\nVuelve a activarla eligiendo el archivo otra vez."
+                else -> "🔄 Copia automática: activada. Se actualiza sola en el mismo archivo cuando cierras el teclado."
+            }, 12.5f, if (err != null) textC else muted
+        ).apply { setPadding(0, dpi(14f), 0, dpi(8f)); setLineSpacing(dp(2f), 1f) })
+        val arow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        arow.addView(button(if (auto == null || err != null) "Activar copia automática" else "Guardar ahora", auto == null || err != null) {
+            if (auto != null && err == null) {
+                Backup.autoIfDue(this, force = true) { ok ->
+                    runOnUiThread {
+                        Toast.makeText(this, if (ok) "✅ Copia actualizada" else "No se pudo actualizar la copia", Toast.LENGTH_SHORT).show()
+                        render()
+                    }
+                }
+            } else try {
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    setType("application/zip")
+                    putExtra(Intent.EXTRA_TITLE, "TecladoXP-copia-automatica.zip")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                        Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                }, REQ_BACKUP_AUTO)
+            } catch (_: Exception) {
+                Toast.makeText(this, "No se pudo abrir el selector de archivos", Toast.LENGTH_SHORT).show()
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(4f) })
+        if (auto != null) arow.addView(button("Desactivar", false) {
+            try {
+                contentResolver.releasePersistableUriPermission(android.net.Uri.parse(auto),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            } catch (_: Exception) {
+            }
+            settings.edit().remove("auto_backup_uri").remove("auto_backup_error").apply()
+            render()
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dpi(4f) })
+        c.addView(arow)
         root.addView(c)
     }
 

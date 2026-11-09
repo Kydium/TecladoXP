@@ -348,6 +348,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             composing.setLength(0)
             lastCorrection = null
             dict.saveAsync()
+            Backup.autoIfDue(this)
         }
     }
 

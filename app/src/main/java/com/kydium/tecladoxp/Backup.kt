@@ -37,6 +37,38 @@ object Backup {
             it.isFile && it.length() < 8_000_000 && !it.name.endsWith(".apk") && it.name != "ultimo_error.txt"
         } ?: emptyList()
 
+    // ---------- automatic copy: the same file (e.g. in Google Drive) is rewritten by itself ----------
+    private const val AUTO_EVERY = 6L * 3_600_000      // at most every 6 hours
+    @Volatile private var running = false
+
+    fun autoUri(ctx: Context): String? =
+        ctx.getSharedPreferences("settings", Context.MODE_PRIVATE).getString("auto_backup_uri", null)
+
+    /** Rewrites the automatic copy if it's due (or [force]). Runs in the background. */
+    fun autoIfDue(ctx: Context, force: Boolean = false, done: ((Boolean) -> Unit)? = null) {
+        val app = ctx.applicationContext
+        val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        val uriText = prefs.getString("auto_backup_uri", null) ?: return
+        if (!force && System.currentTimeMillis() - prefs.getLong("last_backup", 0L) < AUTO_EVERY) return
+        if (running) return
+        running = true
+        Thread {
+            var ok = false
+            try {
+                val uri = android.net.Uri.parse(uriText)
+                app.contentResolver.openOutputStream(uri, "wt")?.use { write(app, it) }
+                prefs.edit().putLong("last_backup", System.currentTimeMillis()).remove("auto_backup_error").apply()
+                ok = true
+            } catch (e: Exception) {
+                prefs.edit().putString("auto_backup_error", e.message ?: e.toString()).apply()
+                CrashLog.log(e, "copia automática")
+            } finally {
+                running = false
+            }
+            done?.invoke(ok)
+        }.start()
+    }
+
     fun write(ctx: Context, out: OutputStream) {
         Dictionary.get(ctx.filesDir).saveNow()
         TouchModel.save()
@@ -48,6 +80,7 @@ object Backup {
                 val p = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
                 val sb = StringBuilder()
                 for ((k, v) in p.all) {
+                    if (k == "auto_backup_uri" || k == "auto_backup_error") continue   // only valid on this phone
                     val line = when (v) {
                         is Boolean -> "b\t$v"
                         is Int -> "i\t$v"
@@ -93,7 +126,10 @@ object Backup {
         Dictionary.get(ctx.filesDir).frozen = true
         for ((name, text) in prefs) {
             if (name !in PREFS) continue
-            val ed = ctx.getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear()
+            val sp = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
+            val keepAuto = if (name == "settings") sp.getString("auto_backup_uri", null) else null
+            val ed = sp.edit().clear()
+            if (keepAuto != null) ed.putString("auto_backup_uri", keepAuto)
             for (line in text.split('\n')) {
                 val t = line.split('\t', limit = 3)
                 if (t.size < 3) continue
