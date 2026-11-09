@@ -612,6 +612,13 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         main.postDelayed(flushXpRunnable, xpPauseMs)
     }
 
+    /** Every letter, tap or swipe movement counts as "still typing": the pause starts over. */
+    private fun stillTyping() {
+        if (XpManager.pendingXp <= 0) return
+        main.removeCallbacks(flushXpRunnable)
+        main.postDelayed(flushXpRunnable, xpPauseMs)
+    }
+
     private fun flushXp() {
         main.removeCallbacks(flushXpRunnable)
         val r = XpManager.flush() ?: return
@@ -688,6 +695,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     // ================================================================= key handling
 
     override fun onPressFeedback(code: Int) {
+        stillTyping()
         vibrate()
         keyClick(code)
     }
@@ -984,6 +992,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     }
 
     override fun onGlideStart() {
+        stillTyping()
         if (!dict.loaded) return
         prepareGlide()
     }
@@ -1008,6 +1017,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     }
 
     override fun onGlideProgress(px: FloatArray, py: FloatArray, n: Int) {
+        stillTyping()
         val v = kv ?: return
         if (!dict.loaded || !glidePrepared) return
         if (v.unitW <= 0f || v.keyRowH <= 0f) return
