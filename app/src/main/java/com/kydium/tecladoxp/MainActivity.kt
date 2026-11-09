@@ -168,6 +168,7 @@ class MainActivity : Activity() {
 
         renderSetup()
         renderUpdate()
+        renderBackup()
         renderErrorLog()
         renderProfile(lvl, into, need)
         renderStats()
@@ -562,6 +563,39 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK) return
         if (requestCode == REQ_CHAT) {
             learnFromChat(uri)
+            return
+        }
+        if (requestCode == REQ_BACKUP_SAVE) {
+            try {
+                contentResolver.openOutputStream(uri)?.use { Backup.write(this, it) }
+                settings.edit().putLong("last_backup", System.currentTimeMillis()).apply()
+                Toast.makeText(this, "✅ Copia guardada", Toast.LENGTH_LONG).show()
+                render()
+            } catch (e: Exception) {
+                CrashLog.log(e, "copia")
+                Toast.makeText(this, "No se pudo guardar la copia: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        if (requestCode == REQ_BACKUP_LOAD) {
+            AlertDialog.Builder(this)
+                .setTitle("¿Restaurar esta copia?")
+                .setMessage("Se reemplaza tu nivel, XP, ajustes y todo lo aprendido por lo que tiene la copia. La app se cerrará para cargarla; vuelve a abrirla.")
+                .setPositiveButton("Restaurar") { _, _ ->
+                    val ok = try {
+                        contentResolver.openInputStream(uri)?.use { Backup.restore(this, it) } ?: false
+                    } catch (e: Exception) {
+                        CrashLog.log(e, "restaurar"); false
+                    }
+                    if (!ok) {
+                        Toast.makeText(this, "Ese archivo no es una copia de Teclado XP", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this, "✅ Copia restaurada. Abre la app de nuevo", Toast.LENGTH_LONG).show()
+                        window.decorView.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 1500)
+                    }
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
             return
         }
         val name = when (requestCode) {
@@ -1133,6 +1167,51 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(4f) })
         c.addView(row)
         updateTrainScore()
+        root.addView(c)
+    }
+
+    private val REQ_BACKUP_SAVE = 44
+    private val REQ_BACKUP_LOAD = 45
+
+    /** Save / restore everything (level, XP, settings, learned words…) as a file, e.g. in Google Drive. */
+    private fun renderBackup() {
+        val c = card()
+        sectionTitle(c, "☁️ Copia de seguridad")
+        val last = settings.getLong("last_backup", 0L)
+        val when_ = if (last == 0L) "Aún no has guardado ninguna copia."
+        else "Última copia: " + java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale("es")).format(java.util.Date(last)) +
+            (if (System.currentTimeMillis() - last > 7L * 86_400_000) "  ⚠️ hace más de una semana" else "")
+        c.addView(text(
+            "Guarda tu nivel, XP, logros, ajustes, palabras aprendidas y tu forma de deslizar en un archivo. " +
+                "Elige Google Drive al guardar y quedará en tu cuenta: si cambias de celular o reinstalas, " +
+                "lo recuperas con Restaurar.\n$when_", 12.5f, muted
+        ).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(button("Guardar copia", true) {
+            try {
+                val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    setType("application/zip")
+                    putExtra(Intent.EXTRA_TITLE, "TecladoXP-copia-$day.zip")
+                }, REQ_BACKUP_SAVE)
+            } catch (_: Exception) {
+                Toast.makeText(this, "No se pudo abrir el selector de archivos", Toast.LENGTH_SHORT).show()
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(4f) })
+        row.addView(button("Restaurar", false) {
+            try {
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    setType("*/*")
+                }, REQ_BACKUP_LOAD)
+            } catch (_: Exception) {
+                Toast.makeText(this, "No se pudo abrir el selector de archivos", Toast.LENGTH_SHORT).show()
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(4f) })
+        c.addView(row)
         root.addView(c)
     }
 

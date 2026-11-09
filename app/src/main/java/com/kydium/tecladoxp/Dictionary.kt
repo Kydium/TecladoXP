@@ -895,8 +895,17 @@ class Dictionary(private val userDir: File?) {
         }
     }
 
+    fun saveAsync() = save(false)
+
+    /** Writes what it learned right now (used before making a backup). */
+    fun saveNow() = save(true)
+
+    /** Set after restoring a backup: the old data in memory must not overwrite the restored files. */
+    @Volatile var frozen = false
+
     @Synchronized
-    fun saveAsync() {
+    private fun save(now: Boolean) {
+        if (frozen) return
         val dir = userDir ?: return
         if (!dirty) return
         dirty = false
@@ -906,7 +915,7 @@ class Dictionary(private val userDir: File?) {
         val tp = ArrayList<Pair<String, FloatArray>>()
         for ((w, list) in templates) for (t in list) tp.add(Pair(w, t.copyOf()))
         val bl = userBlocked.toList()
-        Thread {
+        val job = Runnable {
             try {
                 File(dir, "blocked_words.txt").writeText(bl.joinToString("\n"))
                 File(dir, "user_words.txt").writeText(uw.entries.joinToString("\n") { "${it.key}\t${it.value}" })
@@ -922,7 +931,8 @@ class Dictionary(private val userDir: File?) {
                 File(dir, "glide_shapes.txt").writeText(ts.toString())
             } catch (_: Exception) {
             }
-        }.start()
+        }
+        if (now) job.run() else Thread(job).start()
     }
 
     /** Remember the shape you drew for [word] (call when you keep a swiped word). */
