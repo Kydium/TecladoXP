@@ -632,6 +632,11 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private fun flushXp() {
         main.removeCallbacks(flushXpRunnable)
+        if (listening) {
+            // dictating: the XP (and its sound) waits until you finish, so the microphone isn't interrupted
+            main.postDelayed(flushXpRunnable, xpPauseMs)
+            return
+        }
         val r = XpManager.flush() ?: return
         val v = kv
         v?.setPendingXp(0)
@@ -1451,7 +1456,10 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
                 val keepGoing = !voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
                 listening = keepGoing
-                if (!keepGoing) kv?.setVoice(false)
+                if (!keepGoing) {
+                    kv?.setVoice(false)
+                    stillTyping()
+                }
                 val ic = ic() ?: return
                 val out = formatVoice(text)
                 if (out.isBlank()) {
