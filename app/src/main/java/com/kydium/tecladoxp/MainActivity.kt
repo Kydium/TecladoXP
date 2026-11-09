@@ -1027,21 +1027,41 @@ class MainActivity : Activity() {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(cardBg2, 12f, dpi(1f), Color.argb(60, 255, 255, 255))
+            background = rounded(cardBg2, 12f, dpi(1f), Color.argb(110, Color.red(accent), Color.green(accent), Color.blue(accent)))
             setPadding(dpi(14f), dpi(12f), dpi(14f), dpi(12f))
             isClickable = true
         }
         box.addView(text(items.getOrNull(selected) ?: "Elegir…", 15f, textC), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        box.addView(text("▾", 16f, muted))
+        box.addView(text("▾", 16f, accent2))
         box.setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle(title)
-                .setSingleChoiceItems(items.toTypedArray(), selected) { d, which ->
-                    d.dismiss()
-                    if (which != selected) onPick(which)
+            // the list opens right under the box, with the app's own look
+            val list = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(cardBg2, 14f, dpi(1.5f), accent)
+                setPadding(dpi(6f), dpi(6f), dpi(6f), dpi(6f))
+            }
+            val pop = android.widget.PopupWindow(list, box.width, ViewGroup.LayoutParams.WRAP_CONTENT, true)
+            items.forEachIndexed { i, name ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dpi(12f), dpi(12f), dpi(12f), dpi(12f))
+                    if (i == selected) background = rounded(Color.argb(70, Color.red(accent), Color.green(accent), Color.blue(accent)), 10f)
+                    isClickable = true
+                    setOnClickListener {
+                        pop.dismiss()
+                        if (i != selected) onPick(i)
+                    }
                 }
-                .setNegativeButton("Cancelar", null)
-                .show()
+                row.addView(text(name, 15f, if (i == selected) Color.WHITE else textC, i == selected),
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (i == selected) row.addView(text("✓", 15f, accent2, true))
+                list.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            pop.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            pop.setOutsideTouchable(true)
+            pop.setElevation(dp(12f))
+            pop.showAsDropDown(box, 0, dpi(4f))
         }
         parent.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
