@@ -349,6 +349,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             lastCorrection = null
             dict.saveAsync()
             Backup.autoIfDue(this)
+            CloudSync.autoUpload(this)
         }
     }
 

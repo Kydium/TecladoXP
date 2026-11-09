@@ -84,8 +84,70 @@ class MainActivity : Activity() {
         handleShare(intent)
     }
 
+    private var handledLogin: String? = null
+
+    /** Coming back from the login page: tecladoxp://login?rt=…&uid=…&email=… */
+    private fun handleLogin(intent: Intent?): Boolean {
+        val data = intent?.data ?: return false
+        if (data.scheme != "tecladoxp" || data.host != "login") return false
+        val rt = data.getQueryParameter("rt") ?: return true
+        val uid = data.getQueryParameter("uid") ?: return true
+        if (rt == handledLogin) return true      // same intent again (e.g. activity recreated)
+        handledLogin = rt
+        CloudSync.saveLogin(this, rt, uid, data.getQueryParameter("email") ?: "")
+        Toast.makeText(this, "Conectado. Revisando tu cuenta…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val cloud = try { CloudSync.fetchMeta(this) } catch (_: Exception) { null }
+            XpManager.init(this)
+            val mine = XpManager.totalXp + XpManager.pendingXp
+            runOnUiThread {
+                if (cloud != null && cloud.xp > mine) {
+                    askBringFromCloud(cloud, mine)
+                } else {
+                    CloudSync.autoUpload(this, force = true) { ok -> runOnUiThread {
+                        Toast.makeText(this, if (ok) "☁️ Tu progreso ya está guardado en tu cuenta" else (CloudSync.lastError(this) ?: "No se pudo guardar"), Toast.LENGTH_LONG).show()
+                        render()
+                    } }
+                    render()
+                }
+            }
+        }.start()
+        return true
+    }
+
+    private fun askBringFromCloud(cloud: CloudSync.Meta, mine: Long) {
+        val date = java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale("es")).format(java.util.Date(cloud.time))
+        AlertDialog.Builder(this)
+            .setTitle("Tienes progreso en tu cuenta")
+            .setMessage("En la nube: nivel ${cloud.level} (${cloud.xp} XP), guardado el $date" +
+                (if (cloud.device.isNotBlank()) " desde ${cloud.device}" else "") +
+                ".\nEn este celular: $mine XP.\n\n¿Traerlo a este celular? Se reemplaza lo de aquí.")
+            .setPositiveButton("Traer de la nube") { _, _ -> bringFromCloud() }
+            .setNegativeButton("Quedarme con este") { _, _ ->
+                CloudSync.autoUpload(this, force = true) { _ -> runOnUiThread { render() } }
+            }
+            .show()
+    }
+
+    private fun bringFromCloud() {
+        Toast.makeText(this, "Descargando…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val ok = try { CloudSync.download(this) } catch (e: Exception) { CrashLog.log(e, "nube"); false }
+            runOnUiThread {
+                if (ok) {
+                    Toast.makeText(this, "✅ Listo. Abre la app de nuevo", Toast.LENGTH_LONG).show()
+                    window.decorView.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 1500)
+                } else {
+                    Toast.makeText(this, CloudSync.lastError(this) ?: "No hay nada guardado en la nube", Toast.LENGTH_LONG).show()
+                    render()
+                }
+            }
+        }.start()
+    }
+
     /** "Exportar chat" → share with Teclado XP. */
     private fun handleShare(intent: Intent?) {
+        if (handleLogin(intent)) return
         if (intent?.action != Intent.ACTION_SEND) return
         val uri: Uri? = if (android.os.Build.VERSION.SDK_INT >= 33) {
             intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
@@ -1192,7 +1254,62 @@ class MainActivity : Activity() {
     /** Save / restore everything (level, XP, settings, learned words…) as a file, e.g. in Google Drive. */
     private fun renderBackup() {
         val c = card()
-        sectionTitle(c, "☁️ Copia de seguridad")
+        sectionTitle(c, "☁️ Tu cuenta")
+        if (!CloudSync.signedIn(this)) {
+            c.addView(text(
+                "Inicia sesión con Google (la misma cuenta de My Wallet) y tu nivel, XP, logros, ajustes y palabras " +
+                    "aprendidas se guardan solos en tu cuenta. Si cambias de celular, solo vuelves a iniciar sesión.",
+                12.5f, muted
+            ).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
+            c.addView(button("Iniciar sesión con Google", true) {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(CloudSync.LOGIN_PAGE)))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "No se pudo abrir el navegador", Toast.LENGTH_SHORT).show()
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        } else {
+            val up = CloudSync.lastUpload(this)
+            val err = CloudSync.lastError(this)
+            c.addView(text(
+                "Conectado: ${CloudSync.email(this)}\n" +
+                    (if (up == 0L) "Aún no se guardó nada." else "Guardado en la nube: " +
+                        java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale("es")).format(java.util.Date(up))) +
+                    "\nSe guarda solo al cerrar el teclado (cada 20 min como máximo)." +
+                    (if (err != null) "\n⚠️ $err" else ""),
+                12.5f, if (err != null) textC else muted
+            ).apply { setPadding(0, 0, 0, dpi(10f)); setLineSpacing(dp(2f), 1f) })
+            val crow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            crow.addView(button("Guardar ahora", true) {
+                CloudSync.autoUpload(this, force = true) { ok -> runOnUiThread {
+                    Toast.makeText(this, if (ok) "☁️ Guardado" else (CloudSync.lastError(this) ?: "No se pudo guardar"), Toast.LENGTH_LONG).show()
+                    render()
+                } }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(3f) })
+            crow.addView(button("Traer de la nube", false) {
+                Thread {
+                    val cloud = try { CloudSync.fetchMeta(this) } catch (_: Exception) { null }
+                    XpManager.init(this)
+                    val mine = XpManager.totalXp + XpManager.pendingXp
+                    runOnUiThread {
+                        if (cloud == null) Toast.makeText(this, CloudSync.lastError(this) ?: "No hay nada guardado en la nube", Toast.LENGTH_LONG).show()
+                        else askBringFromCloud(cloud, mine)
+                    }
+                }.start()
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(3f) })
+            c.addView(crow)
+            c.addView(button("Cerrar sesión", false) {
+                CloudSync.signOut(this)
+                render()
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dpi(6f) })
+        }
+        root.addView(c)
+        renderFileBackup()
+    }
+
+    private fun renderFileBackup() {
+        val c = card()
+        sectionTitle(c, "💾 Copia en archivo")
         val last = settings.getLong("last_backup", 0L)
         val when_ = if (last == 0L) "Aún no has guardado ninguna copia."
         else "Última copia: " + java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale("es")).format(java.util.Date(last)) +

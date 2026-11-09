@@ -77,23 +77,9 @@ object Backup {
             zip.write("$MAGIC\n${System.currentTimeMillis()}\n".toByteArray())
             zip.closeEntry()
             for (name in PREFS) {
-                val p = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
-                val sb = StringBuilder()
-                for ((k, v) in p.all) {
-                    if (k == "auto_backup_uri" || k == "auto_backup_error") continue   // only valid on this phone
-                    val line = when (v) {
-                        is Boolean -> "b\t$v"
-                        is Int -> "i\t$v"
-                        is Long -> "l\t$v"
-                        is Float -> "f\t$v"
-                        is String -> "s\t${esc(v)}"
-                        is Set<*> -> "S\t${esc(v.joinToString(SEP))}"
-                        else -> continue
-                    }
-                    sb.append(esc(k)).append('\t').append(line).append('\n')
-                }
+                val sb = prefsText(ctx, name)
                 zip.putNextEntry(ZipEntry("prefs/$name.txt"))
-                zip.write(sb.toString().toByteArray(Charsets.UTF_8))
+                zip.write(sb.toByteArray(Charsets.UTF_8))
                 zip.closeEntry()
             }
             for (f in backupFiles(ctx)) {
@@ -102,6 +88,56 @@ object Backup {
                 zip.closeEntry()
             }
         }
+    }
+
+    /** All values of a preferences file as text lines (key, type, value). */
+    fun prefsText(ctx: Context, name: String, skip: Set<String> = emptySet()): String {
+        val p = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
+        val sb = StringBuilder()
+        for ((k, v) in p.all) {
+            if (k == "auto_backup_uri" || k == "auto_backup_error" || k in skip) continue   // only valid on this phone
+            val line = when (v) {
+                is Boolean -> "b\t$v"
+                is Int -> "i\t$v"
+                is Long -> "l\t$v"
+                is Float -> "f\t$v"
+                is String -> "s\t${esc(v)}"
+                is Set<*> -> "S\t${esc(v.joinToString(SEP))}"
+                else -> continue
+            }
+            sb.append(esc(k)).append('\t').append(line).append('\n')
+        }
+        return sb.toString()
+    }
+
+    /** Replaces a preferences file with [text] from [prefsText] (keeps this phone's own keys). */
+    fun applyPrefs(ctx: Context, name: String, text: String, keep: Set<String> = emptySet()) {
+        val sp = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
+        val kept = sp.all.filterKeys { it in keep || it == "auto_backup_uri" }
+        val ed = sp.edit().clear()
+        for ((k, v) in kept) when (v) {
+            is String -> ed.putString(k, v)
+            is Long -> ed.putLong(k, v)
+            is Int -> ed.putInt(k, v)
+            is Boolean -> ed.putBoolean(k, v)
+            is Float -> ed.putFloat(k, v)
+        }
+        for (line in text.split('\n')) {
+            val t = line.split('\t', limit = 3)
+            if (t.size < 3) continue
+            val k = unesc(t[0])
+            if (k in keep) continue
+            val v = t[2]
+            when (t[1]) {
+                "b" -> ed.putBoolean(k, v == "true")
+                "i" -> v.toIntOrNull()?.let { ed.putInt(k, it) }
+                "l" -> v.toLongOrNull()?.let { ed.putLong(k, it) }
+                "f" -> v.toFloatOrNull()?.let { ed.putFloat(k, it) }
+                "s" -> ed.putString(k, unesc(v))
+                "S" -> ed.putStringSet(k, unesc(v).split(SEP).filter { it.isNotEmpty() }.toSet())
+            }
+        }
+        ed.commit()
     }
 
     /** Replaces the current data with the backup. Returns false if it isn't a Teclado XP backup. */
@@ -124,28 +160,7 @@ object Backup {
         }
         if (!ok) return false
         Dictionary.get(ctx.filesDir).frozen = true
-        for ((name, text) in prefs) {
-            if (name !in PREFS) continue
-            val sp = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
-            val keepAuto = if (name == "settings") sp.getString("auto_backup_uri", null) else null
-            val ed = sp.edit().clear()
-            if (keepAuto != null) ed.putString("auto_backup_uri", keepAuto)
-            for (line in text.split('\n')) {
-                val t = line.split('\t', limit = 3)
-                if (t.size < 3) continue
-                val k = unesc(t[0])
-                val v = t[2]
-                when (t[1]) {
-                    "b" -> ed.putBoolean(k, v == "true")
-                    "i" -> v.toIntOrNull()?.let { ed.putInt(k, it) }
-                    "l" -> v.toLongOrNull()?.let { ed.putLong(k, it) }
-                    "f" -> v.toFloatOrNull()?.let { ed.putFloat(k, it) }
-                    "s" -> ed.putString(k, unesc(v))
-                    "S" -> ed.putStringSet(k, unesc(v).split(SEP).filter { it.isNotEmpty() }.toSet())
-                }
-            }
-            ed.commit()
-        }
+        for ((name, text) in prefs) if (name in PREFS) applyPrefs(ctx, name, text)
         for (f in backupFiles(ctx)) if (f.name != "ultimo_error.txt") f.delete()
         for ((name, data) in files) File(ctx.filesDir, name).writeBytes(data)
         return true
