@@ -1367,16 +1367,12 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             it.setRecognitionListener(voiceListener)
             recognizer = it
         }
-        val lang = Locale.getDefault().let { if (it.language == "es") it.toLanguageTag() else "es-419" }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
-        }
+        // Android 13+: one continuous session (no restart and no beep between sentences)
+        segmented = Build.VERSION.SDK_INT >= 33 && !settings.getBoolean("voice_seg_fail", false)
+        val intent = voiceIntent(segmented)
         voiceIntent = intent
+        voiceStartAt = SystemClock.uptimeMillis()
+        heardSomething = false
         voiceUserStop = false
         lastSpeechAt = SystemClock.uptimeMillis()
         voiceCaps = v.shiftState > 0
@@ -1394,6 +1390,72 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private var voiceCaps = false
     private var voiceNeedsSpace = false
+    private var segmented = false
+    private var heardSomething = false
+    private var voiceStartAt = 0L
+
+    private fun voiceIntent(seg: Boolean): Intent {
+        val lang = when (Lang.setting(settings)) {
+            "en" -> "en-US"
+            else -> Locale.getDefault().let { if (it.language == "es") it.toLanguageTag() else "es-419" }
+        }
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, voiceSilenceMs)
+            // the session ends only after this much silence; each sentence arrives in onSegmentResults
+            if (seg) putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS)
+        }
+    }
+
+    /** Older phones: the recognizer has to be restarted after each sentence; silence its beep meanwhile. */
+    private fun muteBeep() {
+        val am = audio ?: (getSystemService(Context.AUDIO_SERVICE) as? AudioManager)?.also { audio = it } ?: return
+        val muted = ArrayList<Int>()
+        for (st in intArrayOf(AudioManager.STREAM_SYSTEM, AudioManager.STREAM_NOTIFICATION, AudioManager.STREAM_MUSIC)) {
+            try {
+                if (!am.isStreamMute(st)) { am.adjustStreamVolume(st, AudioManager.ADJUST_MUTE, 0); muted.add(st) }
+            } catch (_: Exception) {
+            }
+        }
+        if (muted.isNotEmpty()) main.postDelayed({
+            for (st in muted) try { am.adjustStreamVolume(st, AudioManager.ADJUST_UNMUTE, 0) } catch (_: Exception) {}
+        }, 700)
+    }
+
+    /** Writes a finished sentence of the dictation. */
+    private fun commitVoice(text: String) {
+        val ic = ic() ?: return
+        val out = formatVoice(text)
+        if (out.isBlank()) {
+            if (composing.isNotEmpty()) ic.commitText("", 1)
+            composing.setLength(0)
+            return
+        }
+        ic.commitText(out, 1)
+        composing.setLength(0)
+        lastWordWasGlide = false
+        val words = text.trim().split(Regex("\\s+")).filter { w -> w.any { it.isLetter() } }
+        for (w in words) afterWordCommitted(w.trim { !it.isLetterOrDigit() }, WordKind.TYPED)
+        kv?.let { if (it.shiftState == 1) it.shiftState = 0 }
+        // the next sentence continues after a space
+        voiceCaps = false
+        voiceNeedsSpace = (ic.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
+    }
+
+    private fun endVoice() {
+        listening = false
+        kv?.setVoice(false)
+        if (composing.isNotEmpty()) {
+            ic()?.finishComposingText()
+            composing.setLength(0)
+        }
+        refreshSuggestions()
+        stillTyping()
+    }
 
     private fun formatVoice(text: String): String {
         var t = text.trim()
@@ -1411,6 +1473,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         voiceNeedsSpace = (ic()?.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
         listening = true
         kv?.setVoice(true)
+        muteBeep()
         main.postDelayed({
             if (listening && !voiceUserStop) {
                 try { r.startListening(i) } catch (_: Exception) { listening = false; kv?.setVoice(false) }
@@ -1431,7 +1494,25 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private val voiceListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() { lastSpeechAt = SystemClock.uptimeMillis() }
+        override fun onBeginningOfSpeech() {
+            lastSpeechAt = SystemClock.uptimeMillis()
+            heardSomething = true
+        }
+
+        // Android 13+ continuous session: each sentence, then the end after the silence
+        override fun onSegmentResults(segmentResults: Bundle) {
+            CrashLog.safe("voz") {
+                heardSomething = true
+                lastSpeechAt = SystemClock.uptimeMillis()
+                val text = segmentResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                commitVoice(text)
+                if (listening) kv?.setVoice(true)
+            }
+        }
+
+        override fun onEndOfSegmentedSession() {
+            CrashLog.safe("voz") { if (listening || composing.isNotEmpty()) endVoice() }
+        }
         override fun onRmsChanged(rmsdB: Float) { kv?.setVoiceLevel(rmsdB) }
         override fun onBufferReceived(buffer: ByteArray?) {}
         override fun onEndOfSpeech() {}
@@ -1442,6 +1523,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
                 if (!listening) return
                 val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: return
                 if (text.isBlank()) return
+                heardSomething = true
                 lastSpeechAt = SystemClock.uptimeMillis()
                 val ic = ic() ?: return
                 composing.setLength(0)
@@ -1454,6 +1536,11 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         override fun onResults(results: Bundle?) {
             CrashLog.safe("voz") {
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                if (segmented) {
+                    commitVoice(text)
+                    endVoice()
+                    return
+                }
                 val keepGoing = !voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
                 listening = keepGoing
                 if (!keepGoing) {
@@ -1481,6 +1568,26 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
         override fun onError(error: Int) {
             CrashLog.safe("voz") {
+                if (segmented && listening) {
+                    // this phone's recognizer doesn't do continuous sessions: switch to the old way once
+                    if (!heardSomething && SystemClock.uptimeMillis() - voiceStartAt < 2500 && !voiceUserStop &&
+                        error != SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS && error != SpeechRecognizer.ERROR_NETWORK &&
+                        error != SpeechRecognizer.ERROR_NETWORK_TIMEOUT && error != SpeechRecognizer.ERROR_NO_MATCH &&
+                        error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                    ) {
+                        settings.edit().putBoolean("voice_seg_fail", true).apply()
+                        segmented = false
+                        val i = voiceIntent(false)
+                        voiceIntent = i
+                        try { recognizer?.startListening(i) } catch (_: Exception) { endVoice() }
+                        return
+                    }
+                    if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        // the silence time passed
+                        endVoice()
+                        return
+                    }
+                }
                 // silence / no match: keep listening until 5 s have passed without speech
                 if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) &&
                     !voiceUserStop && listening && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs
