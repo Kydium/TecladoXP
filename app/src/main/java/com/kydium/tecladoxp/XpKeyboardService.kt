@@ -127,7 +127,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     // ================================================================= languages
 
-    private fun langSetting(): String = settings.getString("lang", "es") ?: "es"
+    private fun langSetting(): String = Lang.setting(settings)
 
     /** Loads the dictionary for the chosen language(s) if it isn't loaded yet. */
     private fun ensureLanguage() {
@@ -190,6 +190,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         XpManager.init(this)
         TouchModel.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
+        Lang.migrate(settings)
         Tuner.load(settings)
         clipboard = getSystemService(ClipboardManager::class.java)
         loadClips()
@@ -232,6 +233,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         val v = kv ?: return
         if (settings.getString("theme", "noche") == CustomTheme.ID && CustomTheme.hasImage(this)) {
             v.theme = CustomTheme.theme(this)
+            v.bgPos = CustomTheme.position(this)
             v.bgImage = CustomTheme.bitmap(this)
         } else {
             v.bgImage = null
@@ -248,6 +250,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         v.showFloatingXp = settings.getBoolean("floatxp", true)
         v.showPreview = settings.getBoolean("preview", true)
         v.keySpacing = settings.getInt("keyspacing", 1)
+        v.keys3d = settings.getBoolean("keys3d", false)
         v.longPressMs = settings.getInt("longpress", 320).toLong()
         v.numberRow = settings.getBoolean("numrow", false)
         val oneHand = settings.getInt("onehand", 0)
@@ -1501,10 +1504,13 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     /** Long-press on space: switch language (Español → English → Español · English). */
     override fun onSpaceLongPress() {
         vibrate(30)
-        val next = when (langSetting()) { "es" -> "en"; "en" -> "es_en"; else -> "es" }
-        settings.edit().putString("lang", next).apply()
+        val raw = settings.getString("lang", "auto") ?: "auto"
+        val nextRaw = when (raw) { "es" -> "en"; "en" -> "es_en"; "es_en" -> "auto"; else -> "es" }
+        settings.edit().putString("lang", nextRaw).apply()
+        val next = Lang.resolve(nextRaw)
         kv?.spaceLabel = langLabel(next)
-        kv?.showBanner("🌐 ${langLabel(next)}", "Mantén la barra espaciadora para cambiar de idioma")
+        kv?.showBanner("🌐 " + (if (nextRaw == "auto") "Del sistema · " else "") + langLabel(next),
+            "Mantén la barra espaciadora para cambiar de idioma")
         ensureLanguage()
     }
 }

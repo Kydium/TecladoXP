@@ -183,6 +183,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     /** Picture behind the keys (your own theme), or null for the theme's colors. */
     var bgImage: android.graphics.Bitmap? = null
         set(v) { field = v; invalidate() }
+    /** Where the picture sits: x, y (0..1) and zoom. */
+    var bgPos = floatArrayOf(0.5f, 0.5f, 1f)
+
+    /** Keys with depth: a thicker edge below and light on top. */
+    var keys3d = false
+        set(v) { if (field != v) { field = v; invalidate() } }
     private val srcRect = android.graphics.Rect()
     private val dstRect = RectF()
     private val rect = RectF()
@@ -1234,7 +1240,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
         val img = bgImage
         if (img != null && width > 0 && height > 0) {
-            val r = CustomTheme.visibleRect(img.width, img.height, height.toFloat() / width)
+            val r = CustomTheme.visibleRect(img.width, img.height, height.toFloat() / width, bgPos)
             srcRect.set(r[0], r[1], r[2], r[3])
             dstRect.set(0f, 0f, w, height.toFloat())
             bgPaint.shader = null
@@ -1415,16 +1421,28 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             val special = k.isSpecial && k.code != Codes.SPACE
             val base = if (special) t.keySpecial else t.key
             rect.set(k.left + gapX / 2f, k.top + gapY / 2f, k.right - gapX / 2f, k.bottom - gapY / 2f)
-            // shadow
+            // shadow (in 3D: a thick edge below the key)
             keyPaint.shader = null
-            keyPaint.color = darker(base)
-            rect.offset(0f, dp(1.2f))
+            val depth = if (keys3d) dp(3.5f) else dp(1.2f)
+            keyPaint.color = if (keys3d) {
+                if (Color.alpha(base) < 200) Color.argb(150, 0, 0, 0) else darker(darker(base))
+            } else darker(base)
+            rect.offset(0f, depth)
             c.drawRoundRect(rect, radius, radius, keyPaint)
-            rect.offset(0f, -dp(1.2f))
+            rect.offset(0f, -depth)
+            if (keys3d && k === pressed) rect.offset(0f, depth * 0.6f)   // pressed key goes down
             keyPaint.color = if (k === pressed) t.keyPressed else base
             if (k.code == Codes.ENTER) keyPaint.color = if (k === pressed) t.keyPressed else t.accent
             if (k.code == Codes.SHIFT && shiftState > 0) keyPaint.color = if (shiftState == 2) t.accent else t.keyPressed
             c.drawRoundRect(rect, radius, radius, keyPaint)
+            if (keys3d) {
+                // light from above: brighter top half
+                keyPaint.color = Color.argb(if (k === pressed) 10 else 34, 255, 255, 255)
+                val bottom = rect.bottom
+                rect.bottom = rect.top + rect.height() * 0.48f
+                c.drawRoundRect(rect, radius, radius, keyPaint)
+                rect.bottom = bottom
+            }
             if (t.border != 0) {
                 linePaint.shader = null
                 linePaint.style = Paint.Style.STROKE

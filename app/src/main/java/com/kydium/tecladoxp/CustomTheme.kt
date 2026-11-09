@@ -101,23 +101,30 @@ object CustomTheme {
     /** Color of the picture at a spot (0..1 of the part the keyboard shows). */
     fun colorAt(ctx: Context, fx: Float, fy: Float, aspect: Float): Int {
         val bmp = bitmap(ctx) ?: return Color.WHITE
-        val r = visibleRect(bmp.width, bmp.height, aspect)
+        val r = visibleRect(bmp.width, bmp.height, aspect, position(ctx))
         val x = (r[0] + fx.coerceIn(0f, 1f) * (r[2] - r[0])).toInt().coerceIn(0, bmp.width - 1)
         val y = (r[1] + fy.coerceIn(0f, 1f) * (r[3] - r[1])).toInt().coerceIn(0, bmp.height - 1)
         return bmp.getPixel(x, y) or 0xFF000000.toInt()
     }
 
-    /** Part of the picture that fills an area of [aspect] = height / width (centered crop). */
-    fun visibleRect(w: Int, h: Int, aspect: Float): IntArray {
-        val wantH = w * aspect
-        return if (wantH <= h) {
-            val top = ((h - wantH) / 2f).toInt()
-            intArrayOf(0, top, w, top + wantH.toInt())
-        } else {
-            val wantW = h / aspect
-            val left = ((w - wantW) / 2f).toInt()
-            intArrayOf(left, 0, left + wantW.toInt(), h)
-        }
+    /**
+     * Part of the picture that fills an area of [aspect] = height / width.
+     * [pos] = x, y where the crop sits (0..1, 0.5 = centered) and zoom (1 = whole width or height).
+     */
+    fun visibleRect(w: Int, h: Int, aspect: Float, pos: FloatArray = floatArrayOf(0.5f, 0.5f, 1f)): IntArray {
+        var cw: Float
+        var ch: Float
+        if (w * aspect <= h) { cw = w.toFloat(); ch = w * aspect } else { ch = h.toFloat(); cw = h / aspect }
+        val z = pos[2].coerceIn(1f, 4f)
+        cw /= z; ch /= z
+        val left = ((w - cw) * pos[0].coerceIn(0f, 1f))
+        val top = ((h - ch) * pos[1].coerceIn(0f, 1f))
+        return intArrayOf(left.toInt(), top.toInt(), (left + cw).toInt(), (top + ch).toInt())
+    }
+
+    fun position(ctx: Context): FloatArray {
+        val s = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
+        return floatArrayOf(s.getFloat("ct_ox", 0.5f), s.getFloat("ct_oy", 0.5f), s.getFloat("ct_zoom", 1f))
     }
 
     /** Height / width of the keyboard (about the same on every screen). */
@@ -136,7 +143,9 @@ object CustomTheme {
     fun theme(ctx: Context): KbTheme {
         val s = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
         val light = s.getBoolean("ct_light", false)
-        val alpha = when (s.getInt("ct_keys", 1)) { 0 -> 70; 2 -> 215; else -> 140 }
+        // transparency of the keys, 0 = solid … 100 = invisible
+        val transp = s.getInt("ct_transp", when (s.getInt("ct_keys", 1)) { 0 -> 72; 2 -> 15; else -> 45 })
+        val alpha = (255 * (100 - transp.coerceIn(0, 100)) / 100)
         val accent = autoColor(ctx)
         val border = if (s.getBoolean("ct_border", true)) borderColor(ctx) else 0
         val keyRgb = if (light) Color.rgb(250, 250, 252) else Color.rgb(18, 18, 24)
