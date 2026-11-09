@@ -84,6 +84,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     var showHints = true
     var glideEnabled = true
     var showFloatingXp = true
+    /** Space between keys (only how they look; the touch area of each key stays the same): 0 tight, 1 like Gboard, 2 wide. */
+    var keySpacing = 1
+        set(v) { if (field != v) { field = v; invalidate() } }
+    private fun keyGapX() = when (keySpacing) { 0 -> 3f; 2 -> 9f; else -> 6f }
+    private fun keyGapY() = when (keySpacing) { 0 -> 4.5f; 2 -> 14f; else -> 10f }
+
     /** Bubble above the key while you press it. */
     var showPreview = true
     var longPressMs = 320L
@@ -779,9 +785,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun drawEditPanel(c: Canvas, t: KbTheme) {
-        val gapX = dp(3f)
-        val gapY = dp(4.5f)
-        val radius = dp(7f)
+        val gapX = dp(keyGapX())
+        val gapY = dp(keyGapY())
+        val radius = dp(if (keySpacing == 0) 7f else 8f)
         for (cell in editCells) {
             editBounds(cell)
             rect.set(rect.left + gapX / 2f, rect.top + gapY / 2f, rect.right - gapX / 2f, rect.bottom - gapY / 2f)
@@ -1364,9 +1370,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun drawKeys(c: Canvas, now: Long) {
         val t = theme
-        val gapX = dp(3f)
-        val gapY = dp(4.5f)
-        val radius = dp(7f)
+        val gapX = dp(keyGapX())
+        val gapY = dp(keyGapY())
+        val radius = dp(if (keySpacing == 0) 7f else 8f)
         val pressed = if (mode == Mode.PRESS || mode == Mode.POPUP || mode == Mode.CURSOR || mode == Mode.DELSWIPE) curKey else null
         var idx = 0
         if (voiceMode) {

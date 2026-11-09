@@ -241,6 +241,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         v.showHints = settings.getBoolean("hints", true)
         v.showFloatingXp = settings.getBoolean("floatxp", true)
         v.showPreview = settings.getBoolean("preview", true)
+        v.keySpacing = settings.getInt("keyspacing", 1)
         v.longPressMs = settings.getInt("longpress", 320).toLong()
         v.numberRow = settings.getBoolean("numrow", false)
         val oneHand = settings.getInt("onehand", 0)

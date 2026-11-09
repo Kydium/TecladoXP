@@ -652,6 +652,8 @@ class MainActivity : Activity() {
         sectionTitle(k, "⌨️ Teclado")
         optionRow(k, "Altura del teclado", "", "height", 1,
             listOf(4 to "Mínima", 0 to "Baja", 1 to "Normal", 2 to "Alta", 3 to "Máxima"))
+        optionRow(k, "Separación de las teclas", "Solo cambia cómo se ven: cada tecla se toca igual que antes", "keyspacing", 1,
+            listOf(0 to "Juntas", 1 to "Como Gboard", 2 to "Más separadas"))
         switchRow(k, "Fila de números", "Una fila del 1 al 0 arriba de las letras", "numrow", false)
         optionRow(k, "Modo una mano", "El teclado se achica hacia un lado para escribir con el pulgar. " +
             "También se activa desde ▦ en el teclado.", "onehand", 0,
