@@ -187,6 +187,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         super.onCreate()
         CrashLog.init(this)
         GlideLog.init(this)
+        VoiceLog.init(this)
         XpManager.init(this)
         TouchModel.init(this)
         settings = getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -1380,6 +1381,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         voiceCaps = v.shiftState > 0
         voiceNeedsSpace = (ic.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
         listening = true
+        VoiceLog.add("▶ INICIO (modo ${if (segmented) "continuo" else "clásico"}, silencio ${voiceSilenceMs / 1000} s, Android ${Build.VERSION.SDK_INT})")
         v.setVoice(true)
         vibrate(20)
         try {
@@ -1453,7 +1455,9 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
      * (for example while you think what to say): then it starts again quietly.
      */
     private fun voiceStoppedByItself() {
+        val quiet = (SystemClock.uptimeMillis() - lastSpeechAt) / 100 / 10f
         if (!voiceUserStop && SystemClock.uptimeMillis() - lastSpeechAt < voiceSilenceMs) {
+            VoiceLog.add("↻ Google paró solo tras $quiet s callado → lo vuelvo a encender")
             if (composing.isNotEmpty()) { ic()?.finishComposingText(); composing.setLength(0) }
             voiceNeedsSpace = (ic()?.getTextBeforeCursor(1, 0)?.toString() ?: "").let { it.isNotEmpty() && !it[0].isWhitespace() }
             voiceCaps = false
@@ -1471,6 +1475,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun endVoice() {
+        VoiceLog.add("■ FIN (${if (voiceUserStop) "tocaste el micrófono" else "pasó el tiempo de silencio"})")
         listening = false
         kv?.setVoice(false)
         if (composing.isNotEmpty()) {
@@ -1498,6 +1503,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         listening = true
         kv?.setVoice(true)
         muteBeep()
+        VoiceLog.add("↻ reinicio (modo clásico)")
         main.postDelayed({
             if (listening && !voiceUserStop) {
                 try { r.startListening(i) } catch (_: Exception) { listening = false; kv?.setVoice(false) }
@@ -1519,6 +1525,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
     private val voiceListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) {}
         override fun onBeginningOfSpeech() {
+            VoiceLog.add("🗣 empezaste a hablar")
             lastSpeechAt = SystemClock.uptimeMillis()
             heardSomething = true
         }
@@ -1529,12 +1536,14 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
                 heardSomething = true
                 lastSpeechAt = SystemClock.uptimeMillis()
                 val text = segmentResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                VoiceLog.add("✔ frase: \"$text\"")
                 commitVoice(text)
                 if (listening) kv?.setVoice(true)
             }
         }
 
         override fun onEndOfSegmentedSession() {
+            VoiceLog.add("· Google terminó la sesión")
             CrashLog.safe("voz") { if (listening || composing.isNotEmpty()) voiceStoppedByItself() }
         }
         override fun onRmsChanged(rmsdB: Float) { kv?.setVoiceLevel(rmsdB) }
@@ -1560,6 +1569,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         override fun onResults(results: Bundle?) {
             CrashLog.safe("voz") {
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                VoiceLog.add("✔ resultado: \"$text\"")
                 if (segmented) {
                     commitVoice(text)
                     voiceStoppedByItself()
@@ -1591,6 +1601,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         }
 
         override fun onError(error: Int) {
+            VoiceLog.add("⚠ error $error de Google")
             CrashLog.safe("voz") {
                 if (segmented && listening) {
                     // this phone's recognizer doesn't do continuous sessions: switch to the old way once
@@ -1600,6 +1611,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
                         error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
                     ) {
                         settings.edit().putBoolean("voice_seg_fail", true).apply()
+                        VoiceLog.add("→ este celular no acepta el modo continuo: paso al clásico")
                         segmented = false
                         val i = voiceIntent(false)
                         voiceIntent = i

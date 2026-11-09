@@ -264,7 +264,7 @@ class MainActivity : Activity() {
             "writing" -> { renderWritingSettings(); renderMyWords(); renderLearnChats() }
             "swipe" -> renderTrainer()
             "sound" -> renderSoundSettings()
-            "progress" -> { renderStats(); renderAchievements(); renderXpSettings() }
+            "progress" -> { renderStats(); renderAchievements(); renderXpSettings(); renderVoiceLog() }
             "account" -> renderBackup()
             "help" -> renderHelp()
         }
@@ -1198,6 +1198,31 @@ class MainActivity : Activity() {
     }
 
     /** Shown only if the keyboard wrote down an error: lets you copy it to send it. */
+    /** What the dictation did, to send it and see where it cuts. */
+    private fun renderVoiceLog() {
+        VoiceLog.init(this)
+        val log = VoiceLog.text()
+        val c = card()
+        sectionTitle(c, "🎙️ Registro del dictado")
+        c.addView(text("Dicta algo con pausas y luego copia esto y envíamelo: muestra cuándo hablaste, " +
+            "cada frase que entendió y si Google se cortó o reinició.", 12.5f, muted).apply { setPadding(0, 0, 0, dpi(8f)) })
+        c.addView(text(if (log.isBlank()) "(vacío: usa el micrófono del teclado primero)" else log.lines().takeLast(12).joinToString("\n"),
+            11f, textC).apply {
+            typeface = Typeface.MONOSPACE
+            background = rounded(cardBg2, 10f)
+            setPadding(dpi(10f), dpi(8f), dpi(10f), dpi(8f))
+        })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dpi(10f), 0, 0) }
+        row.addView(button("Copiar todo", true) {
+            getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Dictado Teclado XP", VoiceLog.text()))
+            Toast.makeText(this, "Copiado: pégalo en el chat", Toast.LENGTH_SHORT).show()
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dpi(4f) })
+        row.addView(button("Borrar", false) { VoiceLog.clear(); render() },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dpi(4f) })
+        c.addView(row)
+        root.addView(c)
+    }
+
     private fun renderErrorLog() {
         val log = CrashLog.read(this) ?: return
         val c = card()
