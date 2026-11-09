@@ -1022,10 +1022,42 @@ class MainActivity : Activity() {
     }
 
     /** A label plus a row of buttons to pick one value (saved as an Int setting). */
+    /** A box showing the chosen option; tap it to open the list. */
+    private fun dropdown(parent: LinearLayout, title: String, items: List<String>, selected: Int, onPick: (Int) -> Unit) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(cardBg2, 12f, dpi(1f), Color.argb(60, 255, 255, 255))
+            setPadding(dpi(14f), dpi(12f), dpi(14f), dpi(12f))
+            isClickable = true
+        }
+        box.addView(text(items.getOrNull(selected) ?: "Elegir…", 15f, textC), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        box.addView(text("▾", 16f, muted))
+        box.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle(title)
+                .setSingleChoiceItems(items.toTypedArray(), selected) { d, which ->
+                    d.dismiss()
+                    if (which != selected) onPick(which)
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
+        }
+        parent.addView(box, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
     private fun optionRow(parent: LinearLayout, label: String, desc: String, key: String, def: Int, options: List<Pair<Int, String>>) {
         parent.addView(text(label, 15f, textC).apply { setPadding(0, dpi(12f), 0, if (desc.isEmpty()) dpi(8f) else 0) })
         if (desc.isNotEmpty()) parent.addView(text(desc, 12f, muted).apply { setPadding(0, 0, 0, dpi(8f)) })
         val current = settings.getInt(key, def)
+        if (options.size > 3) {
+            // many options: a list you open
+            dropdown(parent, label, options.map { it.second }, options.indexOfFirst { it.first == current }) { i ->
+                settings.edit().putInt(key, options[i].first).apply()
+                render()
+            }
+            return
+        }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for ((value, name) in options) {
             val b = button(name, value == current) {
@@ -1047,20 +1079,15 @@ class MainActivity : Activity() {
     private fun renderWritingSettings() {
         val w = card()
         sectionTitle(w, "✍️ Escritura")
-        w.addView(text("Idioma del teclado", 15f, textC).apply { setPadding(0, 0, 0, dpi(8f)) })
         val lang = settings.getString("lang", "auto").let { if (it in listOf("es", "en", "es_en")) it else "auto" }
-        val langRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf("auto" to "Del sistema", "es" to "Español", "en" to "English", "es_en" to "Ambos").forEach { (id, label) ->
-            langRow.addView(button(label, id == lang) {
-                settings.edit().putString("lang", id).apply()
-                render()
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = dpi(3f); rightMargin = dpi(3f)
-            })
+        val langs = listOf("auto" to "Del sistema", "es" to "Español", "en" to "English", "es_en" to "Español e inglés")
+        dropdown(w, "Idioma del teclado", langs.map { it.second }, langs.indexOfFirst { it.first == lang }) { i ->
+            settings.edit().putString("lang", langs[i].first).apply()
+            render()
         }
-        w.addView(langRow)
+
         w.addView(text("\"Del sistema\" usa el idioma de tu celular (ahora: ${if (Lang.system() == "en") "English" else "Español"}). " +
-            "\"Ambos\" sirve si mezclas español e inglés: entiende los dos, pero corrige un poco menos. " +
+            "\"Español e inglés\" sirve si mezclas español e inglés: entiende los dos, pero corrige un poco menos. " +
             "También puedes cambiarlo manteniendo la barra espaciadora.", 12f, muted)
             .apply { setPadding(0, dpi(6f), 0, dpi(10f)) })
         switchRow(w, "Escritura deslizante", "Desliza el dedo por las letras para escribir", "glide", true)
