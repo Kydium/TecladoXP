@@ -449,7 +449,8 @@ class StyleRenderer(private val dm: DisplayMetrics) {
         val now = SystemClock.uptimeMillis()
         if (parts.size > 140) parts.removeAt(0)
         if (style == "fuego") {
-            val col = lerpColor(Color.parseColor("#FF3C00"), Color.parseColor("#FFD24A"), Random.nextFloat())
+            val col = if (t.trailTint != 0) lerpColor(t.trailTint, Color.WHITE, Random.nextFloat() * 0.6f)
+                else lerpColor(Color.parseColor("#FF3C00"), Color.parseColor("#FFD24A"), Random.nextFloat())
             parts.add(TP(x + (Random.nextFloat() - 0.5f) * dp(6f), y, (Random.nextFloat() - 0.5f) * dp(1.2f),
                 -dp(0.8f) - Random.nextFloat() * dp(1.5f), now, 450L + Random.nextLong(250), col, dp(2f + Random.nextFloat() * 3f), false))
         } else {
@@ -515,23 +516,28 @@ class StyleRenderer(private val dm: DisplayMetrics) {
                 c.drawCircle(xs[n - 1], ys[n - 1], dp(4.5f), fill)
             }
             "arcoiris" -> {
+                val hsvT = FloatArray(3)
+                if (t.trailTint != 0) Color.colorToHSV(t.trailTint, hsvT)
                 for (i in 1 until n) {
                     stroke.strokeWidth = dp(5.5f)
-                    stroke.color = Color.HSVToColor(alpha, floatArrayOf((i * 7f) % 360f, 0.85f, 1f))
+                    // with your own color: shades of that color instead of the whole rainbow
+                    stroke.color = if (t.trailTint != 0)
+                        Color.HSVToColor(alpha, floatArrayOf((hsvT[0] + 40f * kotlin.math.sin(i * 0.12f) + 360f) % 360f, hsvT[1].coerceAtLeast(0.5f), 1f))
+                    else Color.HSVToColor(alpha, floatArrayOf((i * 7f) % 360f, 0.85f, 1f))
                     c.drawLine(xs[i - 1], ys[i - 1], xs[i], ys[i], stroke)
                 }
             }
             "fuego" -> {
                 val start = max(1, n - 160)
                 val span = (n - start).toFloat()
-                val red = Color.parseColor("#FF2A00")
-                val yellow = Color.parseColor("#FFE066")
+                val red = if (t.trailTint != 0) lerpColor(t.trailTint, Color.BLACK, 0.25f) else Color.parseColor("#FF2A00")
+                val yellow = if (t.trailTint != 0) lerpColor(t.trailTint, Color.WHITE, 0.55f) else Color.parseColor("#FFE066")
                 for (pass in 0..1) for (i in start until n) {
                     val f = (i - start + 1) / span
                     val w = dp(2f + 8f * f)
                     if (pass == 0) {
                         stroke.strokeWidth = w * 1.9f
-                        stroke.color = withAlpha(Color.parseColor("#FF6A00"), (alpha * 0.22f * f).toInt())
+                        stroke.color = withAlpha(if (t.trailTint != 0) t.trailTint else Color.parseColor("#FF6A00"), (alpha * 0.22f * f).toInt())
                     } else {
                         stroke.strokeWidth = w
                         stroke.color = withAlpha(lerpColor(red, yellow, f), (alpha * f.pow(0.5f)).toInt())

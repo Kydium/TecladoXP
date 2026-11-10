@@ -146,8 +146,17 @@ object CustomTheme {
         // transparency of the keys, 0 = solid … 100 = invisible
         val transp = s.getInt("ct_transp", when (s.getInt("ct_keys", 1)) { 0 -> 72; 2 -> 15; else -> 45 })
         val alpha = (255 * (100 - transp.coerceIn(0, 100)) / 100)
-        val accent = autoColor(ctx)
-        val border = if (s.getBoolean("ct_border", true)) borderColor(ctx) else 0
+        // the color you chose (automatic, from the picture, white or black) colors everything:
+        // outline, enter key, XP bar, pressed keys, suggestions…
+        val accent = borderColor(ctx)
+        val border = if (s.getBoolean("ct_border", true)) accent else 0
+        val lum = (0.299 * Color.red(accent) + 0.587 * Color.green(accent) + 0.114 * Color.blue(accent)) / 255.0
+        // bold suggestion text must still be readable over the keys
+        val accent2 = when {
+            !light && lum < 0.3 -> Color.WHITE
+            light && lum > 0.75 -> Color.rgb(40, 40, 50)
+            else -> accent
+        }
         val keyRgb = if (light) Color.rgb(250, 250, 252) else Color.rgb(18, 18, 24)
         fun a(c: Int, al: Int) = Color.argb(al.coerceIn(0, 255), Color.red(c), Color.green(c), Color.blue(c))
         return KbTheme(
@@ -160,7 +169,7 @@ object CustomTheme {
             if (light) Color.rgb(20, 20, 26) else Color.WHITE,
             if (light) Color.rgb(70, 70, 80) else Color.rgb(205, 205, 215),
             accent,
-            if (light) Color.rgb(40, 40, 50) else Color.WHITE,
+            accent2,
             border = border,
             dim = s.getInt("ct_dim", 25)
         )

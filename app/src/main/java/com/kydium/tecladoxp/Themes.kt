@@ -1,6 +1,6 @@
 package com.kydium.tecladoxp
 
-class KbTheme(
+data class KbTheme(
     val id: String,
     val name: String,
     val unlockLevel: Int,
@@ -17,7 +17,9 @@ class KbTheme(
     /** Outline color of the keys (0 = none). */
     val border: Int = 0,
     /** How much the background picture is darkened (0..100), for your own theme. */
-    val dim: Int = 0
+    val dim: Int = 0,
+    /** Swipe trail color chosen by you (0 = the trail style's own colors). */
+    val trailTint: Int = 0
 )
 
 private fun c(v: Long) = v.toInt()

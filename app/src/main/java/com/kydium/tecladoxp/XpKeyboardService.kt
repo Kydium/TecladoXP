@@ -241,6 +241,11 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
             v.theme = Themes.byId(settings.getString("theme", "noche"))
                 .let { if (it.unlockLevel <= XpManager.level()) it else Themes.all[0] }
         }
+        v.trailColor = when (val tc = settings.getInt("trailcolor_pick", 0)) {
+            0 -> 0
+            1 -> v.theme.accent
+            else -> tc
+        }
         val lvl = XpManager.level()
         v.xpStyle = XpBarStyles.byId(settings.getString("xpstyle", "clasica"))
             .let { if (it.unlockLevel <= lvl) it.id else "clasica" }

@@ -259,6 +259,16 @@ class MainActivity : Activity() {
                     XpBarStyles.all, "xpstyle") { o, unlocked, selected -> BarSwatch(this, o, unlocked, selected) }
                 renderStylePicker(lvl, "Estela al deslizar", "El rastro que deja tu dedo al escribir deslizando.",
                     TrailStyles.all, "trailstyle") { o, unlocked, selected -> TrailSwatch(this, o, unlocked, selected) }
+                run {
+                    val tc = card()
+                    sectionTitle(tc, "🖌️ Color de la estela")
+                    val cols = listOf(0 to "Del estilo (el normal)", 1 to "Del tema", Color.WHITE to "Blanco",
+                        Color.parseColor("#FF3B3B") to "Rojo", Color.parseColor("#FF9F1C") to "Naranja", Color.parseColor("#FFE14D") to "Amarillo",
+                        Color.parseColor("#3DDC84") to "Verde", Color.parseColor("#22D3EE") to "Celeste", Color.parseColor("#3B82F6") to "Azul",
+                        Color.parseColor("#8B5CF6") to "Morado", Color.parseColor("#FF4FA3") to "Rosado")
+                    optionRow(tc, "Color", "Cambia el color de cualquier estilo de estela", "trailcolor_pick", 0, cols)
+                    root.addView(tc)
+                }
             }
             "keyboard" -> renderKeyboardSettings()
             "writing" -> { renderWritingSettings(); renderMyWords(); renderLearnChats() }
@@ -653,7 +663,7 @@ class MainActivity : Activity() {
         switchRow(c, "Teclas claras", "Teclas blancas con letras oscuras (para imágenes claras)", "ct_light", false) { preview.invalidate() }
         switchRow(c, "Contorno en las teclas", "Una línea de color alrededor de cada tecla", "ct_border", true) { render() }
         if (settings.getBoolean("ct_border", true)) {
-            optionRow(c, "Color del contorno", "Automático saca el color más vivo de tu imagen", "ct_bmode", 0,
+            optionRow(c, "Color del tema", "Pinta el contorno, la tecla de enviar, la barra de XP y lo que tocas. Automático saca el color más vivo de tu imagen", "ct_bmode", 0,
                 listOf(0 to "Automático", 1 to "De la imagen", 2 to "Blanco", 3 to "Negro"))
         }
         root.addView(c)

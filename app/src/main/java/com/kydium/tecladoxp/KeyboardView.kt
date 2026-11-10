@@ -633,7 +633,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             c.drawCircle(cx, cy, dp(15f), keyPaint)
         }
         // 2x2 grid of rounded squares
-        val col = if (active) Color.WHITE else t.text
+        val col = if (active) onAccent(t) else t.text
         keyPaint.shader = null
         keyPaint.color = col
         val s = dp(4.2f)
@@ -663,7 +663,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 keyPaint.color = if (active) t.accent else t.keyPressed
                 c.drawCircle(cx, cy, dp(15f), keyPaint)
             }
-            val col = if (active) Color.WHITE else t.text
+            val col = if (active) onAccent(t) else t.text
             when (i) {
                 0 -> drawClipIcon(c, cx, cy, dp(8f), col)
                 1 -> drawCursorIcon(c, cx, cy, dp(8f), col)
@@ -816,7 +816,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 else -> base
             }
             c.drawRoundRect(rect, radius, radius, keyPaint)
-            val col = if (active) Color.WHITE else t.text
+            val col = if (active) onAccent(t) else t.text
             val cx = rect.centerX()
             val cy = rect.centerY()
             val ar = min(rect.height(), rect.width()) * 0.16f
@@ -1473,12 +1473,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 Codes.ENTER -> {
                     label = enterLabel
                     textPaint.textSize = sp(20f)
-                    textPaint.color = Color.WHITE
+                    textPaint.color = onAccent(t)
                 }
                 Codes.SHIFT -> {
                     label = if (shiftState == 2) "⇪" else "⇧"
                     textPaint.textSize = sp(22f)
-                    if (shiftState == 2) textPaint.color = Color.WHITE
+                    if (shiftState == 2) textPaint.color = onAccent(t)
                 }
                 Codes.DELETE -> textPaint.textSize = sp(20f)
                 Codes.SYMBOLS, Codes.LETTERS, Codes.SYMBOLS2 -> {
@@ -1523,7 +1523,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             }
             else -> return particles
         }
-        renderer.drawTrail(c, trailStyle, theme, gx, gy, gCount, alpha)
+        renderer.drawTrail(c, trailStyle, themeForTrail(), gx, gy, gCount, alpha)
         return true
     }
 
@@ -1599,7 +1599,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             }
             textPaint.typeface = Typeface.DEFAULT
             textPaint.textSize = sp(if (s.length > 2) 18f else 22f)
-            textPaint.color = if (i == popupSel) Color.WHITE else t.text
+            textPaint.color = if (i == popupSel) onAccent(t) else t.text
             c.drawText(s, x0 + popupCellW / 2f, popupTop + popupH / 2f - (textPaint.ascent() + textPaint.descent()) / 2f, textPaint)
         }
     }
@@ -1702,6 +1702,30 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     private fun withAlpha(color: Int, a: Int) = (color and 0x00FFFFFF) or (a.coerceIn(0, 255) shl 24)
+
+    /** Text / icon color that reads well on top of the theme color (dark on light colors). */
+    private fun onAccent(t: KbTheme): Int {
+        val c = t.accent
+        val lum = (0.299 * Color.red(c) + 0.587 * Color.green(c) + 0.114 * Color.blue(c)) / 255.0
+        return if (lum > 0.62) Color.rgb(20, 20, 26) else Color.WHITE
+    }
+
+    /** Color for the swipe trail (0 = the style's own colors). */
+    var trailColor = 0
+        set(v) { if (field != v) { field = v; trailTheme = null; invalidate() } }
+    private var trailTheme: KbTheme? = null
+    private var trailThemeBase: KbTheme? = null
+
+    /** The theme the trail is drawn with: its colors replaced by [trailColor] if you chose one. */
+    private fun themeForTrail(): KbTheme {
+        if (trailColor == 0) return theme
+        val cached = trailTheme
+        if (cached != null && trailThemeBase === theme) return cached
+        val t = theme.copy(accent = trailColor, accent2 = trailColor, trailTint = trailColor)
+        trailTheme = t
+        trailThemeBase = theme
+        return t
+    }
 
     private fun darker(color: Int): Int {
         val r = (Color.red(color) * 0.6f).toInt()
@@ -1819,7 +1843,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         gx[gCount] = x
         gy[gCount] = y
         gCount++
-        if (mode == Mode.GLIDE) renderer.onTrailPoint(trailStyle, theme, x, y)
+        if (mode == Mode.GLIDE) renderer.onTrailPoint(trailStyle, themeForTrail(), x, y)
     }
 
     private fun cancelGesture() {
