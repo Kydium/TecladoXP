@@ -167,7 +167,17 @@ object CloudSync {
         if (!force && System.currentTimeMillis() - lastUpload(app) < EVERY) return
         busy = true
         Thread {
-            val ok = try { upload(app, force) } catch (e: Exception) { CrashLog.log(e, "nube"); false } finally { busy = false }
+            val ok = try {
+                upload(app, force)
+            } catch (e: java.io.IOException) {
+                // no internet at that moment (or the phone blocked it in the background): try again next time
+                prefs(app).edit().putString("error", "No había internet al intentar guardar; se vuelve a intentar solo").apply()
+                false
+            } catch (e: Exception) {
+                CrashLog.log(e, "nube"); false
+            } finally {
+                busy = false
+            }
             done?.invoke(ok)
         }.start()
     }
