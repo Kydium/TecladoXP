@@ -590,7 +590,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
 
     private fun showSuggestions(typed: String, r: Suggestions) {
         val v = kv ?: return
-        val allowed = r.autoCorrect != null && correctionAllowed()
+        val allowed = r.autoCorrect != null && correctionAllowed() && !looksLikeName(typed, r)
         val out = r.slots.map { s ->
             if (s.isEmpty()) s
             else if (s == typed) s
@@ -605,6 +605,13 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         slots = out
         v.setSuggestions(slots, if (allowed) 1 else -1)
     }
+
+    /**
+     * A word you capitalized yourself in the middle of a sentence and that isn't in the dictionary
+     * is most likely a name ("Tom", "Yape"): leave it as you wrote it.
+     */
+    private fun looksLikeName(typed: String, s: Suggestions): Boolean =
+        typed.length >= 2 && typed[0].isUpperCase() && !s.typedValid && context() != null
 
     private fun currentSuggestions(): Suggestions? {
         val typed = composing.toString()
@@ -686,7 +693,7 @@ class XpKeyboardService : InputMethodService(), KeyboardView.Listener {
         if (applyCorrection && !lastWordWasGlide && correctionAllowed()) {
             val s = currentSuggestions()
             val ac = s?.autoCorrect
-            if (ac != null) {
+            if (ac != null && !looksLikeName(typed, s)) {
                 final = matchCase(typed, ac)
                 kind = WordKind.AUTOCORRECT
             }

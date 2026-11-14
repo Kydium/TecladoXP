@@ -1857,7 +1857,8 @@ class MainActivity : Activity() {
         if (!training) return
         val got = guesses.firstOrNull()?.lowercase() ?: ""
         trainTries++
-        val ok = got == trainWord.lowercase()
+        // only the accent differs ("como" / "cómo"): the swipe is the same, it counts as a hit
+        val ok = Dictionary.norm(got) == Dictionary.norm(trainWord.lowercase())
         if (ok) trainHits++
         trainStatus?.text = if (ok) "✅ ¡Bien!" else if (got.isEmpty()) "❌ No reconoció nada" else "❌ Salió «$got» · ya lo aprendí"
         trainStatus?.setTextColor(if (ok) Color.parseColor("#4ADE80") else Color.parseColor("#F87171"))

@@ -8,6 +8,7 @@ import kotlin.math.ln
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sqrt
 
 class Suggestions(
@@ -67,7 +68,10 @@ class Dictionary(private val userDir: File?) {
         private set
 
     // Base n-gram model shipped with the app (from subtitles + treebanks): context -> (total, words, counts)
-    private class Next(val total: Int, val words: Array<String>, val counts: IntArray)
+    private class Next(val total: Int, val words: Array<String>, val counts: IntArray) {
+        /** For contexts with many followers: word -> position (built the first time it's needed). */
+        var index: HashMap<String, Int>? = null
+    }
     private var ngrams: HashMap<String, Next> = HashMap()
 
     @Synchronized
@@ -161,17 +165,40 @@ class Dictionary(private val userDir: File?) {
 
         // glide scoring weights (tuned on simulated finger paths)
         var gFreq = 2f
-        var gLoc = 8f
-        var gMiss = 2f
-        var gLen = 4f
-        var gEnds = 4f
-        var gPass = 1.4f
+        var gLoc = 16.4f
+        var gMiss = 0.72f
+        var gLen = 3.84f
+        var gEnds = 5f
+        var gPass = 2.13f
         var tRadius = 0.6f
         var tScale = 14f
         /** How far (keys) the start / end of a swipe may be from the first / last letter. */
-        var gNear = 1.15f
+        var gNear = 1.7f
         /** Worst shape distance still considered. */
         var gLocMax = 1.0f
+        /** New matcher (elastic). */
+        // typing: language-model mix and autocorrect thresholds
+        var pLinear = false
+        var pW3 = 3f
+        var pW2 = 2f
+        var sMix = true
+        var sL3 = 0.55f
+        var sL2 = 0.35f
+        var sCd = 2.4f
+        var sExtra = -0.1f
+        var sLong = 0f
+        var sMin = -1.0f
+        var sNeed = 0.4f
+        var sLongD = 1.05f
+        var sAccent = 0.5f
+        var gLmMix = false
+        var elasticOn = true
+        var gTop = 5
+        var gCornerW = 1.54f
+        var gCornerFree = 0.48f
+        var gTail = 0.79f
+        var gOver = 0.48f
+        var gShort = 2.4f
 
         /** One dictionary per app process, shared by the keyboard and the settings screen. */
         fun get(dir: File): Dictionary = shared ?: synchronized(this) {
@@ -386,7 +413,44 @@ class Dictionary(private val userDir: File?) {
         return if (p2 > 0f) log10(0.4f * p2) else uni - 0.8f
     }
 
+    /**
+     * Word score with context for typing: log10 of the probability of [lw] after [ctx], mixing
+     * trigram, bigram and plain frequency (so a word the model never saw there still gets a chance),
+     * shifted by +9 to be on the same scale as the word frequency (zipf).
+     */
+    private fun lmMix(ctx: String?, lw: String, zipf: Float): Float {
+        val uni = 10f.pow(zipf - 9f)
+        val key = ctx ?: "^"
+        var p3 = -1f
+        if (key.contains(' ')) ngrams[key]?.let { p3 = prob(it, lw) }
+        var p2 = -1f
+        ngrams[key.substringAfterLast(' ')]?.let { p2 = prob(it, lw) }
+        val p = when {
+            p3 >= 0f && p2 >= 0f -> sL3 * p3 + sL2 * p2 + (1f - sL3 - sL2) * uni
+            p2 >= 0f -> (sL3 * 0.5f + sL2) * p2 + (1f - sL3 * 0.5f - sL2) * uni
+            p3 >= 0f -> sL3 * p3 + (1f - sL3) * uni
+            else -> uni
+        }
+        return log10(max(p, 1e-12f)) + 9f
+    }
+
+    /** Frequency + context score of a candidate while typing. */
+    private fun wordScore(prev: String?, w: String, freq: Int): Float =
+        if (sMix) lmMix(prev, w.lowercase(), freq / 100f) + userCtxBoost(prev, w) + userBoost(w)
+        else freq / 100f + bigramBoost(prev, w) + userBoost(w)
+
+    private fun lmGlide(ctx: String?, lw: String, zipf: Float): Float =
+        if (gLmMix) lmMix(ctx, lw, zipf) - 9f else lmLog(ctx, lw, zipf)
+
     private fun prob(n: Next, w: String): Float {
+        if (n.words.size > 12) {
+            val ix = n.index ?: HashMap<String, Int>(n.words.size * 2).also { m ->
+                for (i in n.words.indices) m[n.words[i]] = i
+                n.index = m
+            }
+            val i = ix[w] ?: return 0f
+            return n.counts[i].toFloat() / n.total
+        }
         for (i in n.words.indices) if (n.words[i] == w) return n.counts[i].toFloat() / n.total
         return 0f
     }
@@ -417,6 +481,8 @@ class Dictionary(private val userDir: File?) {
         val nt = norm(lw)
         buildTapCosts(taps, centers, nt.length)
         val typedValid = isValid(lw)
+        var accentBest = -99f
+        var accentWord: String? = null
         val comp = HashMap<String, Float>()   // completions
         val corr = HashMap<String, Float>()   // corrections (same-ish length)
         val corrDist = HashMap<String, Float>()
@@ -435,13 +501,13 @@ class Dictionary(private val userDir: File?) {
             val idx = sortedIdx[k]
             val extra = norms[idx].length - nt.length
             if (extra <= 0) continue
-            val ctxB = bigramBoost(prev, words[idx]) + userBoost(words[idx])
-            put(comp, words[idx], freqs[idx] / 100f - 0.35f * extra - 0.8f + ctxB)
+            val ws = wordScore(prev, words[idx], freqs[idx])
+            put(comp, words[idx], ws - sExtra * extra - 0.8f)
             // a word that is only 1-2 letters longer can also be the autocorrection
             // ("muchas graci" -> "gracias", "cómo est" -> "estás"), helped a lot by context
             if (extra <= 2 && nt.length >= 2) {
                 val d = 0.6f * extra
-                put(corr, words[idx], freqs[idx] / 100f - d * 2.4f + ctxB)
+                put(corr, words[idx], ws - d * sCd)
                 val od = corrDist[words[idx]]
                 if (od == null || d < od) corrDist[words[idx]] = d
                 corrFreq[words[idx]] = freqs[idx]
@@ -463,9 +529,13 @@ class Dictionary(private val userDir: File?) {
                     if (f0 != nt[0] && !near(f0, nt[0]) && !(nt.length > 1 && f0 == nt[1])) continue
                     val d = dist(nt, norms[idx], maxD)
                     if (d <= maxD) {
-                        val s = freqs[idx] / 100f - d * 2.4f + (if (d == 0f) 1.5f else 0f) +
-                            bigramBoost(prev, words[idx]) + userBoost(words[idx])
+                        val s = wordScore(prev, words[idx], freqs[idx]) - d * sCd + (if (d == 0f) 1.5f else 0f)
                         put(corr, words[idx], s)
+                        if (d == 0f && typedValid && norms[idx] == nt && words[idx].lowercase() != lw) {
+                            // same letters, other accents ("esta" / "está"): which one fits here?
+                            val ws = lmMix(prev, words[idx].lowercase(), freqs[idx] / 100f)
+                            if (ws > accentBest) { accentBest = ws; accentWord = words[idx] }
+                        }
                         val od = corrDist[words[idx]]
                         if (od == null || d < od) corrDist[words[idx]] = d
                         corrFreq[words[idx]] = freqs[idx]
@@ -490,7 +560,16 @@ class Dictionary(private val userDir: File?) {
 
         val bestCorr = corr.entries.maxByOrNull { it.value }
         var auto: String? = null
-        if (!typedValid && bestCorr != null && nt.length >= 2 && bestCorr.value > 1.2f) auto = bestCorr.key
+        // long non-words: a close real word is the answer even if it's a rare one
+        // (only when it is a single slip away: unknown but correct words must be left alone)
+        val bestD = bestCorr?.let { corrDist[it.key] } ?: 9f
+        val need = if (!sMix) 1.2f else if (bestD <= sLongD) max(sNeed - sLong * max(0, nt.length - 4), sMin) else sNeed
+        if (!typedValid && bestCorr != null && nt.length >= 2 && bestCorr.value > need) auto = bestCorr.key
+        // "como estas" -> "estás": the accented twin is much more likely after these words
+        if (sMix && typedValid && auto == null && accentWord != null && (userWords[lw] ?: 0) < 3) {
+            val mine = lmMix(prev, lw, (exact[lw]?.let { freqs[it] } ?: 0) / 100f)
+            if (accentBest - mine > sAccent) auto = accentWord
+        }
         // rare dictionary entries are often typos found on the web ("qeu", "cmo"):
         // still correct them when a much more common word is one edit away
         val typedIdx = exact[lw]
@@ -529,12 +608,13 @@ class Dictionary(private val userDir: File?) {
             n ?: return
             for (i in n.words.indices) {
                 val w = n.words[i]
-                scores[w] = (scores[w] ?: 0f) + weight * sqrt(n.counts[i].toFloat() / n.total)
+                val p = n.counts[i].toFloat() / n.total
+                scores[w] = (scores[w] ?: 0f) + weight * (if (pLinear) p * 3f else sqrt(p))
             }
         }
         val key = ctx ?: "^"
-        if (key.contains(' ')) add(ngrams[key], 3f)
-        add(ngrams[key.substringAfterLast(' ')], 2f)
+        if (key.contains(' ')) add(ngrams[key], pW3)
+        add(ngrams[key.substringAfterLast(' ')], pW2)
         val last = ctx?.substringAfterLast(' ')
         if (last != null) bigrams[last]?.forEach { (w, c) -> scores[w] = (scores[w] ?: 0f) + 1.3f * ln(1f + c) }
         if (ctx != null && ctx.contains(' ')) bigrams[ctx]?.forEach { (w, c) -> scores[w] = (scores[w] ?: 0f) + 1.8f * ln(1f + c) }
@@ -617,9 +697,9 @@ class Dictionary(private val userDir: File?) {
         val cx = HashMap<Char, FloatArray>()
         for ((k, v) in centers) cx[k] = floatArrayOf(v[0] / kw, v[1] / kh)
 
-        fun nearest(x: Float, y: Float, r: Float = gNear): List<Pair<Char, Float>> =
+        fun nearest(x: Float, y: Float, r: Float = gNear, top: Int = 3): List<Pair<Char, Float>> =
             cx.entries.map { Pair(it.key, hypot(it.value[0] - x, it.value[1] - y)) }
-                .filter { it.second < r }.sortedBy { it.second }.take(3)
+                .filter { it.second < r }.sortedBy { it.second }.take(top)
 
         var userLen = 0f
         for (i in 1 until N) userLen += hypot(ux[i] - ux[i - 1], uy[i] - uy[i - 1])
@@ -630,20 +710,46 @@ class Dictionary(private val userDir: File?) {
         fun consider(gp: String, display: String, freq: Float, sd: Float, ed: Float) {
             if (blocked(display)) return
             val bonus = personal[display.lowercase()] ?: 0f
+            if (elasticOn) {
+                // cheap check first: the word's path can't be much longer or shorter than the swipe
+                val il = idealLen(gp, cx)
+                if (bonus <= 0f && (il > userLen * 1.7f + 1.2f || il < userLen * 0.5f - 1.0f)) return
+                passRadius = gPass
+                if (bonus <= 0f && !passes(gp, cx)) return
+                if (!elastic(gp, cx)) return
+                if (eLoc > gLocMax && bonus <= 0f) return
+                val lenRatio = if (userLen > 0.3f) max(0f, il / userLen - 1.1f) else 0f
+                // the finger travelled much more than the word needs = letters the word doesn't have
+                val shortBy = max(0f, userLen - il * 1.25f - 0.5f)
+                val s = gFreq * lmGlide(prev, display.lowercase(), freq) + 9f * gFreq - eLoc * gLoc - eCorner * gMiss -
+                    min(lenRatio, 1.5f) * gLen - min(shortBy, 4f) * gShort - (sd + min(ed, eEnd + gOver)) * gEnds +
+                    userCtxBoost(prev, display) + userBoost(display) + bonus
+                val old = scores[display]
+                if (old == null || s > old) scores[display] = s
+                return
+            }
             if (bonus <= 0f && !passes(gp, cx)) return
             val loc = shapeDist(gp, cx)
             if (loc > gLocMax && bonus <= 0f) return
             val miss = keyMiss(gp, cx)
             // ideal path much longer than what the finger drew = extra detours the user didn't make
             val lenRatio = if (userLen > 0.3f) max(0f, idealLen(gp, cx) / userLen - 1.1f) else 0f
-            val s = gFreq * lmLog(prev, display.lowercase(), freq) + 9f * gFreq - loc * gLoc - miss * gMiss -
+            val s = gFreq * lmGlide(prev, display.lowercase(), freq) + 9f * gFreq - loc * gLoc - miss * gMiss -
                 min(lenRatio, 1.5f) * gLen - (sd + ed) * gEnds + userCtxBoost(prev, display) + userBoost(display) + bonus
             val old = scores[display]
             if (old == null || s > old) scores[display] = s
         }
 
+        if (elasticOn) {
+            starts = nearest(ux[0], uy[0], gNear, gTop)
+            ends = nearest(ux[N - 1], uy[N - 1], gNear, gTop)
+            if (!live) for ((s, sd) in starts) for ((e, ed) in ends) {
+                val bucket = glideBuckets[bucketKey(s, e)] ?: continue
+                for (idx in bucket) consider(gpaths[idx], words[idx], freqs[idx] / 100f, sd, ed)
+            }
+        }
         // try with the normal tolerance; if nothing fits (sloppy swipe), widen it
-        for (radius in floatArrayOf(gPass, gPass + 0.35f, gPass + 0.75f)) {
+        if (!elasticOn) for (radius in floatArrayOf(gPass, gPass + 0.35f, gPass + 0.75f)) {
             passRadius = radius
             for ((s, sd) in starts) for ((e, ed) in ends) {
                 val bucket = glideBuckets[bucketKey(s, e)] ?: continue
@@ -651,7 +757,7 @@ class Dictionary(private val userDir: File?) {
             }
             if (scores.isNotEmpty()) break
         }
-        if (scores.isEmpty() && !live) {
+        if (!elasticOn && scores.isEmpty() && !live) {
             // the finger started or ended far from any letter (overshoot): look a bit further
             starts = nearest(ux[0], uy[0], gNear + 0.5f)
             ends = nearest(ux[N - 1], uy[N - 1], gNear + 0.5f)
@@ -674,7 +780,7 @@ class Dictionary(private val userDir: File?) {
         if (live) {
             // the finger is still moving: keep only "this word so far" matches
             scores.clear()
-            passRadius = gPass
+            passRadius = 1.4f
             val ex0 = ux[N - 1]
             val ey0 = uy[N - 1]
             for ((st, sd) in starts) {
@@ -686,7 +792,7 @@ class Dictionary(private val userDir: File?) {
                     val m = partialMatch(gp, cx, ex0, ey0) ?: continue
                     val (loc, done) = m
                     if (loc > 1.0f) continue
-                    val sc = gFreq * lmLog(prev, display.lowercase(), freqs[idx] / 100f) + 9f * gFreq - loc * gLoc -
+                    val sc = gFreq * lmGlide(prev, display.lowercase(), freqs[idx] / 100f) + 9f * gFreq - loc * gLoc -
                         sd * gEnds - 0.08f * (gp.length - done) + userCtxBoost(prev, display) + userBoost(display) +
                         (personal[display.lowercase()] ?: 0f)
                     val old = scores[display]
@@ -704,10 +810,78 @@ class Dictionary(private val userDir: File?) {
             val display = exact[w]?.let { words[it] } ?: w
             if (!scores.containsKey(display)) {
                 val f = exact[w]?.let { freqs[it] / 100f } ?: 4.5f
-                scores[display] = gFreq * lmLog(prev, w, f) + 9f * gFreq + b - 3f + userCtxBoost(prev, display)
+                scores[display] = gFreq * lmGlide(prev, w, f) + 9f * gFreq + b - 3f + userCtxBoost(prev, display)
             }
         }
         return scores.entries.sortedByDescending { it.value }.take(4).map { it.key }
+    }
+
+    // ---- elastic matching: the swipe is laid over the word's key-to-key path letting each part
+    // stretch (fast or slow, cut corners, overshoot at the end), instead of comparing point by point
+    private var eLoc = 0f      // average distance from the finger to the word's path
+    private var eCorner = 0f   // how far the finger stayed from the letters (corners) of the word
+    private var eEnd = 0f      // distance to the last letter at the moment it was reached
+    private val dpCost = FloatArray(40)
+    private val dpLoc = FloatArray(40)
+    private val dpCor = FloatArray(40)
+    private val dpEnd = FloatArray(40)
+    private val kx = FloatArray(40)
+    private val ky = FloatArray(40)
+
+    private fun segDist(px: Float, py: Float, ax: Float, ay: Float, bx: Float, by: Float): Float {
+        val vx = bx - ax
+        val vy = by - ay
+        val l2 = vx * vx + vy * vy
+        var t = if (l2 > 0f) ((px - ax) * vx + (py - ay) * vy) / l2 else 0f
+        if (t < 0f) t = 0f else if (t > 1f) t = 1f
+        return hypot(px - (ax + vx * t), py - (ay + vy * t))
+    }
+
+    /** Fills eLoc / eCorner / eEnd for word [gp]; false if it can't be this word. */
+    private fun elastic(gp: String, cx: Map<Char, FloatArray>): Boolean {
+        val m = gp.length
+        if (m < 2 || m > 39) return false
+        for (i in 0 until m) {
+            val k = cx[gp[i]] ?: return false
+            kx[i] = k[0]; ky[i] = k[1]
+        }
+        // state s < m-1: finger travelling from letter s to letter s+1; state m-1: past the last letter
+        val inf = 1e9f
+        for (s in 0 until m) { dpCost[s] = inf; dpLoc[s] = 0f; dpCor[s] = 0f; dpEnd[s] = 0f }
+        dpCost[0] = segDist(ux[0], uy[0], kx[0], ky[0], kx[1], ky[1])
+        dpLoc[0] = dpCost[0]
+        val wc = gCornerW
+        for (j in 1 until N) {
+            val x = ux[j]
+            val y = uy[j]
+            // going down so dp[s-1] is still the value of the previous point
+            for (s in min(m - 1, j) downTo 0) {
+                val pc = if (s < m - 1) segDist(x, y, kx[s], ky[s], kx[s + 1], ky[s + 1])
+                else gTail * hypot(x - kx[s], y - ky[s])
+                var best = dpCost[s]
+                var from = s
+                var corner = 0f
+                if (s > 0 && dpCost[s - 1] < inf) {
+                    // the turn at letter s: the nearest of this point and the previous one
+                    val dk = min(hypot(x - kx[s], y - ky[s]), hypot(ux[j - 1] - kx[s], uy[j - 1] - ky[s]))
+                    val cpen = if (dk > gCornerFree) dk - gCornerFree else 0f
+                    val alt = dpCost[s - 1] + wc * cpen
+                    if (alt < best) { best = alt; from = s - 1; corner = cpen
+                        if (s == m - 1) dpEnd[s] = dk }
+                }
+                if (best >= inf) { dpCost[s] = inf; continue }
+                if (from != s) {
+                    dpLoc[s] = dpLoc[s - 1]; dpCor[s] = dpCor[s - 1] + corner
+                }
+                dpCost[s] = best + pc
+                dpLoc[s] += pc
+            }
+        }
+        if (dpCost[m - 1] >= inf) return false
+        eLoc = dpLoc[m - 1] / N
+        eCorner = dpCor[m - 1]
+        eEnd = dpEnd[m - 1]
+        return true
     }
 
     private fun idealLen(gp: String, cx: Map<Char, FloatArray>): Float {

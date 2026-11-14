@@ -9,7 +9,7 @@ import android.content.SharedPreferences
  */
 object Tuner {
     val names = listOf("gFreq", "gLoc", "gMiss", "gLen", "gEnds", "gPass")
-    private val defaults = mapOf("gFreq" to 2f, "gLoc" to 8f, "gMiss" to 2f, "gLen" to 4f, "gEnds" to 4f, "gPass" to 1.4f)
+    private val defaults = mapOf("gFreq" to 2f, "gLoc" to 16.4f, "gMiss" to 0.72f, "gLen" to 3.84f, "gEnds" to 5f, "gPass" to 2.13f)
     const val MIN_SAMPLES = 60
 
     fun get(n: String): Float = when (n) {
@@ -34,15 +34,15 @@ object Tuner {
 
     /** Applies weights saved by an earlier tuning. */
     fun load(prefs: SharedPreferences) {
-        for (n in names) if (prefs.contains("tune_$n")) set(n, prefs.getFloat("tune_$n", get(n)))
+        for (n in names) if (prefs.contains("tune2_$n")) set(n, prefs.getFloat("tune2_$n", get(n)))
     }
 
-    fun isTuned(prefs: SharedPreferences) = prefs.contains("tune_gFreq")
+    fun isTuned(prefs: SharedPreferences) = prefs.contains("tune2_gFreq")
 
     fun reset(prefs: SharedPreferences) {
         val e = prefs.edit()
         for (n in names) {
-            e.remove("tune_$n")
+            e.remove("tune2_$n")
             set(n, defaults[n] ?: get(n))
         }
         e.remove("tune_result").apply()
@@ -100,7 +100,7 @@ object Tuner {
                 return Result(before, before, all.size)
             }
             val e = prefs.edit()
-            for (n in names) e.putFloat("tune_$n", get(n))
+            for (n in names) e.putFloat("tune2_$n", get(n))
             e.putString("tune_result", "${100 * before / all.size}% → ${100 * after / all.size}%").apply()
             return Result(before, after, all.size)
         } catch (e: Exception) {
